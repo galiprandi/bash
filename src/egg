@@ -1,0 +1,369 @@
+#!/bin/bash
+set -euo pipefail
+
+CONFIG_FILE="./egg.env"
+
+########################################
+# Setup Configuration (Create/Update)
+########################################
+setup_config() {
+    # If the configuration file exists, load it.
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+    fi
+
+    local updated=0
+
+    # First: Git user information
+    if [[ -z "${GIT_USER_NAME:-}" ]]; then
+        local default_git_name
+        default_git_name=$(git config --get user.name || echo "")
+        read -p "Enter your name (default: ${default_git_name:-none}): " input
+        GIT_USER_NAME=${input:-$default_git_name}
+        updated=1
+    fi
+
+    if [[ -z "${GIT_USER_EMAIL:-}" ]]; then
+        local default_git_email
+        default_git_email=$(git config --get user.email || echo "")
+        read -p "Enter your email (default: ${default_git_email:-none}): " input
+        GIT_USER_EMAIL=${input:-$default_git_email}
+        updated=1
+    fi
+
+    # Second: Base repository folder
+    if [[ -z "${REPOSITORIES_PATH:-}" ]]; then
+        read -p "Enter the base folder that contains all your repos (default: \$HOME/Github): " input
+        REPOSITORIES_PATH=${input:-"$HOME/Github"}
+        updated=1
+    fi
+
+    # Then: Port settings
+    if [[ -z "${PORT_MONGO:-}" ]]; then
+        read -p "Enter the port for MongoDB (default: 27017): " input
+        PORT_MONGO=${input:-27017}
+        updated=1
+    fi
+
+    if [[ -z "${PORT_MYSQL:-}" ]]; then
+        read -p "Enter the port for MySQL (default: 3306): " input
+        PORT_MYSQL=${input:-3306}
+        updated=1
+    fi
+
+    if [[ -z "${PORT_MYSQL_EGG:-}" ]]; then
+        read -p "Enter the port for MySQL EGG (default: 3307): " input
+        PORT_MYSQL_EGG=${input:-3307}
+        updated=1
+    fi
+
+    if [[ -z "${PORT_HCA:-}" ]]; then
+        read -p "Enter the port for HCA (default: 5000): " input
+        PORT_HCA=${input:-5000}
+        updated=1
+    fi
+
+    if [[ -z "${PORT_SOCKET:-}" ]]; then
+        read -p "Enter the port for Socket (default: 6060): " input
+        PORT_SOCKET=${input:-6060}
+        updated=1
+    fi
+
+    if [[ -z "${PORT_REDIS:-}" ]]; then
+        read -p "Enter the port for Redis (default: 6379): " input
+        PORT_REDIS=${input:-6379}
+        updated=1
+    fi
+
+    # If any variable was updated or the file doesn't exist, confirm and write the configuration file.
+    if [[ $updated -eq 1 || ! -f "$CONFIG_FILE" ]]; then
+        echo ""
+        echo "You have entered:"
+        echo "  GIT_USER_NAME     = $GIT_USER_NAME"
+        echo "  GIT_USER_EMAIL    = $GIT_USER_EMAIL"
+        echo "  REPOSITORIES_PATH = $REPOSITORIES_PATH"
+        echo "  PORT_MONGO        = $PORT_MONGO"
+        echo "  PORT_MYSQL        = $PORT_MYSQL"
+        echo "  PORT_MYSQL_EGG    = $PORT_MYSQL_EGG"
+        echo "  PORT_HCA          = $PORT_HCA"
+        echo "  PORT_SOCKET       = $PORT_SOCKET"
+        echo "  PORT_REDIS        = $PORT_REDIS"
+        echo ""
+        read -p "Are these settings correct? (y/n): " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo "Configuration aborted."
+            exit 1
+        fi
+        cat <<EOF > "$CONFIG_FILE"
+# Egg configuration file
+GIT_USER_NAME="$GIT_USER_NAME"
+GIT_USER_EMAIL="$GIT_USER_EMAIL"
+REPOSITORIES_PATH="$REPOSITORIES_PATH"
+PORT_MONGO=$PORT_MONGO
+PORT_MYSQL=$PORT_MYSQL
+PORT_MYSQL_EGG=$PORT_MYSQL_EGG
+PORT_HCA=$PORT_HCA
+PORT_SOCKET=$PORT_SOCKET
+PORT_REDIS=$PORT_REDIS
+EOF
+        echo "Configuration file updated at $CONFIG_FILE"
+    fi
+}
+
+########################################
+# Load Configuration
+########################################
+load_config() {
+    setup_config
+}
+
+########################################
+# Other Configuration and Constants
+########################################
+readonly VERSION="20250301"
+
+# Hardcoded Services
+readonly SRV_MONGO="service/mongo"
+readonly SRV_MYSQL="service/mysql"
+readonly SRV_MYSQL_EGG="service/mysql-egg"
+readonly SRV_HCA="service/api-hca"
+readonly SRV_SOCKET="service/api-websocket"
+readonly SRV_REDIS="service/redis-zapp-master"
+
+# Colors and formatting using ANSI escape sequences
+readonly COLOR_TEXT="\033[0m"
+readonly COLOR_LIGHT_BLUE="\033[1;94m"
+readonly COLOR_TITLE="\033[1;93m\033[4m"
+readonly COLOR_LINES="\033[1;91m"
+readonly TEXT_BOLD="\033[1m"
+readonly TEXT_NORMAL="\033[0m"
+
+readonly LINE="${COLOR_LINES}──────────────────────────────────────────────────────────────────────${COLOR_TEXT}"
+
+########################################
+# Utility Functions
+########################################
+welcome() {
+    clear
+    echo -e "$LINE"
+    echo -e " ${COLOR_TITLE}Egg Launcher${COLOR_TEXT}                           v${VERSION} by Germán Aliprandi"
+    echo -e "$LINE"
+}
+
+abort() {
+    clear
+    echo "Have a nice day!"
+    kill -INT $$
+}
+
+terminal_title() {
+    echo -ne "\033]0;$1\007"
+}
+
+########################################
+# Port Forwarding Functions
+########################################
+kill_port() {
+    sudo fuser -k "$1"/tcp &
+    wait $!
+}
+
+open_port_forward() {
+    local service_name="$1"
+    local local_port="$2"
+    local remote_port="$3"
+    local namespace="$4"
+
+    if ss -tuln | grep -q ":$local_port "; then
+        echo "Error: Port $local_port is already in use"
+        return 1
+    fi
+
+    echo -e "${COLOR_LIGHT_BLUE}${service_name}${TEXT_NORMAL} listening on http://localhost:$local_port"
+    kubectl port-forward "$service_name" "$local_port:$remote_port" -n "$namespace" &
+}
+
+all_port_forwarding() {
+    terminal_title "PORTS"
+    open_port_forward "$SRV_MONGO" "$PORT_MONGO" 27017 "$1" &
+    open_port_forward "$SRV_MYSQL" "$PORT_MYSQL" 3306 "$1" &
+    open_port_forward "$SRV_MYSQL_EGG" "$PORT_MYSQL_EGG" 3306 "$1" &
+    open_port_forward "$SRV_HCA" "$PORT_HCA" 5000 "$1" &
+    open_port_forward "$SRV_SOCKET" "$PORT_SOCKET" 6060 "$1" &
+    open_port_forward "$SRV_REDIS" "$PORT_REDIS" 6379 "$1" &
+    wait
+}
+
+########################################
+# Log Functions
+########################################
+show_service_log() {
+    local service="$1"
+    local namespace="${2:-development}"
+    terminal_title "📜 ${service}:${namespace}"
+    echo -e "${COLOR_TITLE}Showing logs for ${service} in namespace ${namespace}${TEXT_NORMAL}"
+    kubectl logs -f -l app="$service" -n "$namespace" --all-containers=true | pino-pretty -c
+}
+
+########################################
+# Command Execution and Options
+########################################
+execute_option() {
+    case "$1" in
+        adm)
+            terminal_title "ADM"
+            cd "$REPOSITORIES_PATH/egg-adm/" && npm run dev
+            ;;
+        admin)
+            terminal_title "ADMIN"
+            export NODE_OPTIONS=--openssl-legacy-provider
+            cd "$REPOSITORIES_PATH/egg-admin/" && yarn start
+            ;;
+        bko)
+            terminal_title "BKO"
+            cd "$REPOSITORIES_PATH/egg-backoffice/" && pnpm run start
+            ;;
+        lxp)
+            terminal_title "LXP"
+            cd "$REPOSITORIES_PATH/egg-lxp" && pnpm run start
+            ;;
+        meet)
+            terminal_title "MEET"
+            cd "$REPOSITORIES_PATH/egg-meet/" && pnpm run dev
+            ;;
+        auth)
+            terminal_title "AUTH"
+            cd "$REPOSITORIES_PATH/egg-auth/" && pnpm run dev | pino-pretty -c
+            ;;
+        aw)
+            cd "$REPOSITORIES_PATH/egg-widget-api/" && NODE_ENV=development npm run start | pino-pretty -c
+            ;;
+        eco)
+            terminal_title "ECO"
+            cd "$REPOSITORIES_PATH/api-ecosystem/" && npm run start:dev | pino-pretty -c
+            ;;
+        egg)
+            terminal_title "EGG"
+            cd "$REPOSITORIES_PATH/egg-api/" && npx ts-node-dev --respawn src/index.ts | pino-pretty -c
+            ;;
+        mentor)
+            terminal_title "MENTOR"
+            cd "$REPOSITORIES_PATH/api-mentor/" && npm run dev
+            ;;
+        sdk)
+            terminal_title "SDK"
+            cd "$REPOSITORIES_PATH/egg-video-sdk/" && pnpm run start
+            ;;
+        sign)
+            terminal_title "SIGN"
+            cd "$REPOSITORIES_PATH/egg-api-signup" && npm run dev
+            ;;
+        users)
+            terminal_title "USERS"
+            cd "$REPOSITORIES_PATH/api-user/" && npm run start:dev | pino-pretty -c
+            ;;
+        ws)
+            terminal_title "WS"
+            cd "$REPOSITORIES_PATH/egg-api-websocket/" && pnpm run dev
+            ;;
+        fc)
+            echo "Closing all port forwarding..."
+            sudo pkill kubectl -9
+            ;;
+        fd)
+            aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
+            all_port_forwarding "development"
+            ;;
+        fo)
+            aws eks update-kubeconfig --name egg-eks-dem --region us-east-1
+            all_port_forwarding "demo"
+            ;;
+        fp)
+            aws eks update-kubeconfig --name egg-eks-pro --region us-east-1
+            all_port_forwarding "production"
+            ;;
+        fs)
+            aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
+            all_port_forwarding "staging"
+            ;;
+        log)
+            echo -e "${COLOR_TITLE}Services:${TEXT_NORMAL} api-signup, api-egg, api-websocket, api-hca, mongo, mysql, mysql-egg, redis-zapp-master"
+            read -p "Enter service name [api-signup]: " service
+            service="${service:-api-signup}"
+            echo -e "${COLOR_TITLE}Namespaces:${TEXT_NORMAL} development, staging, demo, production"
+            read -p "Enter namespace [development]: " namespace
+            namespace="${namespace:-development}"
+            show_service_log "$service" "$namespace"
+            ;;
+        mongo)
+            terminal_title "DB:MONGO"
+            cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mongo-client/schema.prisma
+            ;;
+        sql)
+            terminal_title "DB:SQL"
+            cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mysql-client/schema.prisma
+            ;;
+        -h|--help)
+            show_help
+            ;;
+        x)
+            abort
+            ;;
+        *)
+            welcome
+            echo "Invalid option: $1"
+            echo "Use -h or --help for usage information"
+            exit 1
+            ;;
+    esac
+}
+
+########################################
+# Menu and Help Functions
+########################################
+show_options() {
+    echo "  List of available options:"
+    echo ""
+    echo -e "  ${COLOR_TITLE}APIS                                               FRONT${TEXT_NORMAL}"
+    echo -e "${TEXT_BOLD}  auth${TEXT_NORMAL} - api-auth                                    ${TEXT_BOLD}adm${TEXT_NORMAL} - egg-adm"
+    echo -e "${TEXT_BOLD}  aw${TEXT_NORMAL}   - widget-api                                  ${TEXT_BOLD}admin${TEXT_NORMAL} - egg-admin"
+    echo -e "${TEXT_BOLD}  eco${TEXT_NORMAL}  - api-ecosystem                               ${TEXT_BOLD}bko${TEXT_NORMAL} - egg-backoffice"
+    echo -e "${TEXT_BOLD}  egg${TEXT_NORMAL}  - egg-api                                     ${TEXT_BOLD}lxp${TEXT_NORMAL} - egg-lxp"
+    echo -e "${TEXT_BOLD}  mentor${TEXT_NORMAL} - api-mentor                                ${TEXT_BOLD}meet${TEXT_NORMAL} - egg-meet"
+    echo -e "${TEXT_BOLD}  sdk${TEXT_NORMAL}   - egg-video-sdk"
+    echo -e "${TEXT_BOLD}  sign${TEXT_NORMAL}  - api-signup"
+    echo -e "${TEXT_BOLD}  users${TEXT_NORMAL} - api-users"
+    echo -e "${TEXT_BOLD}  ws${TEXT_NORMAL}    - websocket-api"
+    echo ""
+    echo -e "  ${COLOR_TITLE}PORTS                                              OTHERS${TEXT_NORMAL}"
+    echo -e "${TEXT_BOLD}  fc${TEXT_NORMAL}   - Close all port forwarding                     ${TEXT_BOLD}log${TEXT_NORMAL}  - Show logs for all services"
+    echo -e "${TEXT_BOLD}  fd${TEXT_NORMAL}   - Development Ports                             ${TEXT_BOLD}mongo${TEXT_NORMAL} - mongo"
+    echo -e "${TEXT_BOLD}  fo${TEXT_NORMAL}   - Demo Ports                                    ${TEXT_BOLD}sql${TEXT_NORMAL}   - sql"
+    echo -e "${TEXT_BOLD}  fp${TEXT_NORMAL}   - Prod Ports                                    ${TEXT_BOLD}h${TEXT_NORMAL}     - Help"
+    echo -e "${TEXT_BOLD}  fs${TEXT_NORMAL}   - Staging Ports                                 ${TEXT_BOLD}x${TEXT_NORMAL}     - Exit"
+}
+
+show_help() {
+    echo "Egg Launcher v${VERSION}"
+    echo "Usage: $0 [OPTION]"
+    echo ""
+    show_options
+}
+
+main_menu() {
+    welcome
+    show_options
+    echo ""
+    read -p "$(echo -e "${TEXT_BOLD}Enter option:${TEXT_NORMAL} ")" option
+    execute_option "$option"
+}
+
+########################################
+# Main Execution
+########################################
+load_config
+if [[ $# -eq 0 ]]; then
+    main_menu
+else
+    execute_option "$1"
+fi
