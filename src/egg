@@ -137,6 +137,8 @@ readonly COLOR_TITLE="\033[1;93m\033[4m"
 readonly COLOR_LINES="\033[1;91m"
 readonly TEXT_BOLD="\033[1m"
 readonly TEXT_NORMAL="\033[0m"
+readonly TEXT_ORANGE="\033[38;5;214m"
+readonly TEXT_PURPLE="\033[48;5;63m"
 
 readonly LINE="${COLOR_LINES}──────────────────────────────────────────────────────────────────────${COLOR_TEXT}"
 
@@ -160,6 +162,15 @@ terminal_title() {
     echo -ne "\033]0;$1\007"
 }
 
+br() {
+    echo ""
+}
+
+title() {
+    echo -e "${TEXT_BOLD}${TEXT_ORANGE}$1${COLOR_TEXT}"
+    br
+}
+
 ########################################
 # Port Forwarding Functions
 ########################################
@@ -173,14 +184,16 @@ open_port_forward() {
     local local_port="$2"
     local remote_port="$3"
     local namespace="$4"
+    local message="🔌 ${COLOR_LIGHT_BLUE}${service_name}${TEXT_NORMAL} listening on http://localhost:$local_port"
 
     if ss -tuln | grep -q ":$local_port "; then
-        echo "Error: Port $local_port is already in use"
+        echo -e "$message"
         return 1
     fi
 
-    echo -e "${COLOR_LIGHT_BLUE}${service_name}${TEXT_NORMAL} listening on http://localhost:$local_port"
     kubectl port-forward "$service_name" "$local_port:$remote_port" -n "$namespace" &
+    echo -e "$message"
+    wait $!
 }
 
 all_port_forwarding() {
@@ -267,8 +280,13 @@ execute_option() {
             cd "$REPOSITORIES_PATH/egg-api-websocket/" && pnpm run dev
             ;;
         fc)
-            echo "Closing all port forwarding..."
-            sudo pkill kubectl -9
+            title "Closing all port forwarding..."
+            # Find and kill only kubectl port-forward processes
+            for pid in $(pgrep -f "kubectl port-forward"); do
+                kill $pid 2>/dev/null || sudo kill $pid 2>/dev/null
+            done
+            echo "🔌 All port forwarding closed successfully."
+            br
             ;;
         fd)
             aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
