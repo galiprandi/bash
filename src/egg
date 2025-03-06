@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-CONFIG_FILE="./egg.env"
+CONFIG_FILE="$HOME/egg.env"
 
 ########################################
 # Setup Configuration (Create/Update)
