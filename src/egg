@@ -94,7 +94,7 @@ setup_config() {
             echo "Configuration aborted."
             exit 1
         fi
-        cat <<EOF > "$CONFIG_FILE"
+        cat <<EOF >"$CONFIG_FILE"
 # Egg configuration file
 GIT_USER_NAME="$GIT_USER_NAME"
 GIT_USER_EMAIL="$GIT_USER_EMAIL"
@@ -130,13 +130,15 @@ readonly SRV_HCA="service/api-hca"
 readonly SRV_SOCKET="service/api-websocket"
 readonly SRV_REDIS="service/redis-zapp-master"
 
-# Colors and formatting using ANSI escape sequences
+# Colors and formatting using ANSI escape sequences https://colors.sh/
 readonly COLOR_TEXT="\033[0m"
 readonly COLOR_LIGHT_BLUE="\033[1;94m"
 readonly COLOR_TITLE="\033[1;93m\033[4m"
 readonly COLOR_LINES="\033[1;91m"
 readonly TEXT_BOLD="\033[1m"
 readonly TEXT_NORMAL="\033[0m"
+readonly TEXT_ORANGE="\033[38;5;214m"
+readonly TEXT_PURPLE="\033[48;5;63m"
 
 readonly LINE="${COLOR_LINES}──────────────────────────────────────────────────────────────────────${COLOR_TEXT}"
 
@@ -151,13 +153,100 @@ welcome() {
 }
 
 abort() {
-    clear
     echo "Have a nice day!"
     kill -INT $$
 }
 
 terminal_title() {
     echo -ne "\033]0;$1\007"
+}
+
+br() {
+    echo ""
+}
+
+title() {
+    echo -e "${TEXT_BOLD}${TEXT_ORANGE}$1${COLOR_TEXT}"
+    br
+}
+
+t_accent() {
+    echo -e "${TEXT_BOLD}${TEXT_PURPLE}$1${COLOR_TEXT}"
+}
+
+t_blue() {
+    echo -e "${COLOR_LIGHT_BLUE}$1${COLOR_TEXT}"
+}
+
+t_bold() {
+    echo -e "${TEXT_BOLD}$1${COLOR_TEXT}"
+}
+
+t_orange() {
+    echo -e "${TEXT_ORANGE}$1${COLOR_TEXT}"
+}
+
+########################################
+# Update Functions
+########################################
+update_egg() {
+    terminal_title "UPDATE"
+    title "Updating Egg Launcher..."
+
+    local temp_file="/tmp/egg_update"
+    local current_file=$(realpath "$0")
+    local update_url="https://raw.githubusercontent.com/galiprandi/bash/refs/heads/main/src/egg"
+    local backup_file="${current_file}.v${VERSION}"
+
+    # Check if we have internet connectivity
+    if ! curl -s --head "$update_url" >/dev/null; then
+        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Cannot connect to GitHub.")"
+        return 1
+    fi
+
+    # Download the latest version
+    echo "📥 Downloading latest version..."
+    if ! curl -s "$update_url" -o "$temp_file"; then
+        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Download error.")"
+        return 1
+    fi
+
+    # Compare versions
+    local remote_version=$(grep "readonly VERSION=" "$temp_file" | cut -d'"' -f2)
+
+    if [[ "$remote_version" == "$VERSION" ]]; then
+        echo -e "✓ $(t_orange "Already up-to-date") with version $(t_bold "$VERSION")"
+        rm -f "$temp_file"
+        return 0
+    fi
+
+    # Backup current version with version number in filename
+    echo "💾 Creating backup at $backup_file..."
+    cp "$current_file" "$backup_file"
+
+    # Replace current file with new version
+    echo "🔄 Installing version $remote_version..."
+    if ! mv "$temp_file" "$current_file"; then
+        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Could not replace file.")"
+        echo "   Backup is available at $backup_file"
+        return 1
+    fi
+
+    # Preserve execution permissions
+    chmod +x "$current_file"
+
+    echo -e "✅ $(t_orange "Update successful!") Updated from $(t_bold "$VERSION") to $(t_bold "$remote_version")"
+    echo "   Backup saved as $backup_file"
+    echo "   Please restart egg to use the new version."
+
+    # Optional: Ask user if they want to restart now
+    read -p "$(echo -e "${TEXT_BOLD}Restart egg now? (y/n):${TEXT_NORMAL} ")" restart
+    if [[ "$restart" =~ ^[Yy]$ ]]; then
+        echo "Restarting egg..."
+        exec "$current_file"
+    fi
+
+    return 0
 }
 
 ########################################
@@ -173,18 +262,35 @@ open_port_forward() {
     local local_port="$2"
     local remote_port="$3"
     local namespace="$4"
+    local service_short=$(echo "$service_name" | sed 's|service/||')
 
+    # Check if port is already in use
     if ss -tuln | grep -q ":$local_port "; then
-        echo "Error: Port $local_port is already in use"
+        echo -e "🔌 $(t_orange "$service_short") on port $local_port: $(t_bold "Already in use")"
         return 1
     fi
 
-    echo -e "${COLOR_LIGHT_BLUE}${service_name}${TEXT_NORMAL} listening on http://localhost:$local_port"
-    kubectl port-forward "$service_name" "$local_port:$remote_port" -n "$namespace" &
+    # Start port forwarding in background
+    kubectl port-forward "$service_name" "$local_port:$remote_port" -n "$namespace" >/dev/null 2>&1 &
+    local forward_pid=$!
+
+    # Wait briefly to check if forwarding was successful
+    sleep 0.5
+    if kill -0 $forward_pid 2>/dev/null; then
+        echo -e "🔌 $(t_orange "$service_short") listening on $(t_bold "http://localhost:$local_port")"
+    else
+        echo -e "❌ $(t_orange "$service_short") port-forward $(t_bold "failed") on port $local_port"
+        return 1
+    fi
+
+    # Wait for the port forwarding process
+    wait $forward_pid
+    echo -e "💤 $(t_orange "$service_short") port-forward on port $local_port has terminated"
 }
 
 all_port_forwarding() {
     terminal_title "PORTS"
+    title "Opening all port forwarding..."
     open_port_forward "$SRV_MONGO" "$PORT_MONGO" 27017 "$1" &
     open_port_forward "$SRV_MYSQL" "$PORT_MYSQL" 3306 "$1" &
     open_port_forward "$SRV_MYSQL_EGG" "$PORT_MYSQL_EGG" 3306 "$1" &
@@ -210,111 +316,116 @@ show_service_log() {
 ########################################
 execute_option() {
     case "$1" in
-        adm)
-            terminal_title "ADM"
-            cd "$REPOSITORIES_PATH/egg-adm/" && npm run dev
-            ;;
-        admin)
-            terminal_title "ADMIN"
-            export NODE_OPTIONS=--openssl-legacy-provider
-            cd "$REPOSITORIES_PATH/egg-admin/" && yarn start
-            ;;
-        bko)
-            terminal_title "BKO"
-            cd "$REPOSITORIES_PATH/egg-backoffice/" && pnpm run start
-            ;;
-        lxp)
-            terminal_title "LXP"
-            cd "$REPOSITORIES_PATH/egg-lxp" && pnpm run start
-            ;;
-        meet)
-            terminal_title "MEET"
-            cd "$REPOSITORIES_PATH/egg-meet/" && pnpm run dev
-            ;;
-        auth)
-            terminal_title "AUTH"
-            cd "$REPOSITORIES_PATH/egg-auth/" && pnpm run dev | pino-pretty -c
-            ;;
-        aw)
-            cd "$REPOSITORIES_PATH/egg-widget-api/" && NODE_ENV=development npm run start | pino-pretty -c
-            ;;
-        eco)
-            terminal_title "ECO"
-            cd "$REPOSITORIES_PATH/api-ecosystem/" && npm run start:dev | pino-pretty -c
-            ;;
-        egg)
-            terminal_title "EGG"
-            cd "$REPOSITORIES_PATH/egg-api/" && npx ts-node-dev --respawn src/index.ts | pino-pretty -c
-            ;;
-        mentor)
-            terminal_title "MENTOR"
-            cd "$REPOSITORIES_PATH/api-mentor/" && npm run dev
-            ;;
-        sdk)
-            terminal_title "SDK"
-            cd "$REPOSITORIES_PATH/egg-video-sdk/" && pnpm run start
-            ;;
-        sign)
-            terminal_title "SIGN"
-            cd "$REPOSITORIES_PATH/egg-api-signup" && npm run dev
-            ;;
-        users)
-            terminal_title "USERS"
-            cd "$REPOSITORIES_PATH/api-user/" && npm run start:dev | pino-pretty -c
-            ;;
-        ws)
-            terminal_title "WS"
-            cd "$REPOSITORIES_PATH/egg-api-websocket/" && pnpm run dev
-            ;;
-        fc)
-            echo "Closing all port forwarding..."
-            sudo pkill kubectl -9
-            ;;
-        fd)
-            aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
-            all_port_forwarding "development"
-            ;;
-        fo)
-            aws eks update-kubeconfig --name egg-eks-dem --region us-east-1
-            all_port_forwarding "demo"
-            ;;
-        fp)
-            aws eks update-kubeconfig --name egg-eks-pro --region us-east-1
-            all_port_forwarding "production"
-            ;;
-        fs)
-            aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
-            all_port_forwarding "staging"
-            ;;
-        log)
-            echo -e "${COLOR_TITLE}Services:${TEXT_NORMAL} api-signup, api-egg, api-websocket, api-hca, mongo, mysql, mysql-egg, redis-zapp-master"
-            read -p "Enter service name [api-signup]: " service
-            service="${service:-api-signup}"
-            echo -e "${COLOR_TITLE}Namespaces:${TEXT_NORMAL} development, staging, demo, production"
-            read -p "Enter namespace [development]: " namespace
-            namespace="${namespace:-development}"
-            show_service_log "$service" "$namespace"
-            ;;
-        mongo)
-            terminal_title "DB:MONGO"
-            cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mongo-client/schema.prisma
-            ;;
-        sql)
-            terminal_title "DB:SQL"
-            cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mysql-client/schema.prisma
-            ;;
-        -h|--help)
-            show_help
-            ;;
-        x)
-            abort
-            ;;
-        *)
-            welcome
-            echo "Invalid option: $1"
-            echo "Use -h or --help for usage information"
-            exit 1
-            ;;
+    adm)
+        terminal_title "ADM"
+        cd "$REPOSITORIES_PATH/egg-adm/" && npm run dev
+        ;;
+    admin)
+        terminal_title "ADMIN"
+        export NODE_OPTIONS=--openssl-legacy-provider
+        cd "$REPOSITORIES_PATH/egg-admin/" && yarn start
+        ;;
+    bko)
+        terminal_title "BKO"
+        cd "$REPOSITORIES_PATH/egg-backoffice/" && pnpm run start
+        ;;
+    lxp)
+        terminal_title "LXP"
+        cd "$REPOSITORIES_PATH/egg-lxp" && pnpm run start
+        ;;
+    meet)
+        terminal_title "MEET"
+        cd "$REPOSITORIES_PATH/egg-meet/" && pnpm run dev
+        ;;
+    auth)
+        terminal_title "AUTH"
+        cd "$REPOSITORIES_PATH/egg-auth/" && pnpm run dev | pino-pretty -c
+        ;;
+    aw)
+        cd "$REPOSITORIES_PATH/egg-widget-api/" && NODE_ENV=development npm run start | pino-pretty -c
+        ;;
+    eco)
+        terminal_title "ECO"
+        cd "$REPOSITORIES_PATH/api-ecosystem/" && npm run start:dev | pino-pretty -c
+        ;;
+    egg)
+        terminal_title "EGG"
+        cd "$REPOSITORIES_PATH/egg-api/" && npx ts-node-dev --respawn src/index.ts | pino-pretty -c
+        ;;
+    mentor)
+        terminal_title "MENTOR"
+        cd "$REPOSITORIES_PATH/api-mentor/" && npm run dev
+        ;;
+    sdk)
+        terminal_title "SDK"
+        cd "$REPOSITORIES_PATH/egg-video-sdk/" && pnpm run start
+        ;;
+    sign)
+        terminal_title "SIGN"
+        cd "$REPOSITORIES_PATH/egg-api-signup" && npm run dev
+        ;;
+    users)
+        terminal_title "USERS"
+        cd "$REPOSITORIES_PATH/api-user/" && npm run start:dev | pino-pretty -c
+        ;;
+    ws)
+        terminal_title "WS"
+        cd "$REPOSITORIES_PATH/egg-api-websocket/" && pnpm run dev
+        ;;
+    fc)
+        title "Closing all port forwarding..."
+        # Find and kill only kubectl port-forward processes
+        for pid in $(pgrep -f "kubectl port-forward"); do
+            kill $pid 2>/dev/null || sudo kill $pid 2>/dev/null
+        done
+        echo "🔌 All port forwarding closed successfully."
+        br
+        ;;
+    fd)
+        aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
+        all_port_forwarding "development"
+        ;;
+    fo)
+        aws eks update-kubeconfig --name egg-eks-dem --region us-east-1
+        all_port_forwarding "demo"
+        ;;
+    fp)
+        aws eks update-kubeconfig --name egg-eks-pro --region us-east-1
+        all_port_forwarding "production"
+        ;;
+    fs)
+        aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
+        all_port_forwarding "staging"
+        ;;
+    log)
+        echo -e "${COLOR_TITLE}Services:${TEXT_NORMAL} api-signup, api-egg, api-websocket, api-hca, mongo, mysql, mysql-egg, redis-zapp-master"
+        read -p "Enter service name [api-signup]: " service
+        service="${service:-api-signup}"
+        echo -e "${COLOR_TITLE}Namespaces:${TEXT_NORMAL} development, staging, demo, production"
+        read -p "Enter namespace [development]: " namespace
+        namespace="${namespace:-development}"
+        show_service_log "$service" "$namespace"
+        ;;
+    mongo)
+        terminal_title "DB:MONGO"
+        cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mongo-client/schema.prisma
+        ;;
+    sql)
+        terminal_title "DB:SQL"
+        cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mysql-client/schema.prisma
+        ;;
+    -h | --help)
+        show_help
+        ;;
+    x)
+        abort
+        ;;
+    *)
+        welcome
+        echo "Invalid option: $1"
+        echo "Use -h or --help for usage information"
+        exit 1
+        ;;
     esac
 }
 
@@ -324,7 +435,7 @@ execute_option() {
 show_options() {
     echo "  List of available options:"
     echo ""
-    echo -e "  ${COLOR_TITLE}APIS                                               FRONT${TEXT_NORMAL}"
+    echo -e "  $(title "APIs")                                               $(title "Frontends")"
     echo -e "${TEXT_BOLD}  auth${TEXT_NORMAL} - api-auth                                    ${TEXT_BOLD}adm${TEXT_NORMAL} - egg-adm"
     echo -e "${TEXT_BOLD}  aw${TEXT_NORMAL}   - widget-api                                  ${TEXT_BOLD}admin${TEXT_NORMAL} - egg-admin"
     echo -e "${TEXT_BOLD}  eco${TEXT_NORMAL}  - api-ecosystem                               ${TEXT_BOLD}bko${TEXT_NORMAL} - egg-backoffice"
@@ -335,12 +446,13 @@ show_options() {
     echo -e "${TEXT_BOLD}  users${TEXT_NORMAL} - api-users"
     echo -e "${TEXT_BOLD}  ws${TEXT_NORMAL}    - websocket-api"
     echo ""
-    echo -e "  ${COLOR_TITLE}PORTS                                              OTHERS${TEXT_NORMAL}"
-    echo -e "${TEXT_BOLD}  fc${TEXT_NORMAL}   - Close all port forwarding                     ${TEXT_BOLD}log${TEXT_NORMAL}  - Show logs for all services"
+    echo -e "  $(title "Ports")                                                $(title "Other")"
+    echo -e "${TEXT_BOLD}  fc${TEXT_NORMAL}   - Close all port forwarding                     ${TEXT_BOLD}log${TEXT_NORMAL}   - Show logs for all services"
     echo -e "${TEXT_BOLD}  fd${TEXT_NORMAL}   - Development Ports                             ${TEXT_BOLD}mongo${TEXT_NORMAL} - mongo"
     echo -e "${TEXT_BOLD}  fo${TEXT_NORMAL}   - Demo Ports                                    ${TEXT_BOLD}sql${TEXT_NORMAL}   - sql"
-    echo -e "${TEXT_BOLD}  fp${TEXT_NORMAL}   - Prod Ports                                    ${TEXT_BOLD}h${TEXT_NORMAL}     - Help"
-    echo -e "${TEXT_BOLD}  fs${TEXT_NORMAL}   - Staging Ports                                 ${TEXT_BOLD}x${TEXT_NORMAL}     - Exit"
+    echo -e "${TEXT_BOLD}  fp${TEXT_NORMAL}   - Prod Ports                                    ${TEXT_BOLD}update${TEXT_NORMAL} - Update egg script"
+    echo -e "${TEXT_BOLD}  fs${TEXT_NORMAL}   - Staging Ports                                 ${TEXT_BOLD}h${TEXT_NORMAL}     - Help"
+    echo -e "                                                       ${TEXT_BOLD}x${TEXT_NORMAL}     - Exit"
 }
 
 show_help() {
