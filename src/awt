@@ -15,7 +15,7 @@ error_color='\033[1;91m'
 nc='\033[0m'
 
 # Welcome message
-wellcome() {
+welcome() {
     clear
     echo -e "╭───────────────────────────────────────────────────────────────╮"
     echo -e "│                                                               │"
@@ -28,7 +28,7 @@ wellcome() {
 
 # Show "Invalid option" message and wait 1 second
 invalid_option() {
-    wellcome
+    welcome
     echo -e "${color}The option selected is invalid. Please try again.${nc}"
     sleep 1
 }
@@ -39,7 +39,7 @@ new_task_render_type_option() {
     local task_type_opions_desc=("A new feature" "A bug fix" "Documentation only changes" "Changes that do not affect the meaning of the code" "A code change that neither fixes a bug nor adds a feature" "A code change that improves performance" "Adding missing or correcting existing tests" "Changes to the build process or auxiliary tools")
 
     while true; do
-        wellcome
+        welcome
         echo -e "${color}Select the type of change that you're committing:${nc}"
         echo -e ""
 
@@ -105,7 +105,7 @@ new_task_render_type_option() {
 # Valid format: "EGG-123"
 new_task_render_jira_ticket_id() {
     while true; do
-        wellcome
+        welcome
         echo -e "${color}Enter the Jira ticket ID:${nc}"
         echo -e "Format: EGG-123 (letters will be converted to uppercase)"
         echo -e ""
@@ -127,7 +127,7 @@ new_task_render_jira_ticket_id() {
 # Valid format: "This is a title"
 new_task_render_title() {
     while true; do
-        wellcome
+        welcome
         echo -e "${color}Enter the task title:${nc}"
         echo -e ""
         read -p "Task title: " task_title
@@ -149,7 +149,7 @@ new_task_render_branch_name() {
     suggested_branch=$(echo "$suggested_branch" | tr '[:upper:]' '[:lower:]')
 
     while true; do
-        wellcome
+        welcome
         echo -e "${color}Enter the branch name:${nc}"
         echo -e "Suggestion: $suggested_branch"
         echo -e ""
@@ -179,7 +179,7 @@ new_task_render_summary() {
         "Push the new branch to the remote repository"
         "Open a draft pull request on GitHub to ${dev_branch} branch")
 
-    wellcome
+    welcome
     echo -e "${color}Check the following steps and confirm:${nc}"
     echo -e ""
     for ((i = 0; i < ${#new_task_steps[@]}; i++)); do
@@ -215,7 +215,7 @@ new_task_execute() {
     for ((i = 0; i < total_steps; i++)); do
 
         clear
-        wellcome
+        welcome
 
         echo -e "${color}Task creation in progress...${nc}"
         echo -e ""
@@ -299,7 +299,7 @@ new_task_render_advanced_options() {
     local advanced_options=("Merge ${color}develop${nc} => ${color}staging${nc}" "Merge ${color}staging${nc} => ${color}demo${nc}" "Merge ${color}demo${nc} => ${color}main${nc}")
 
     while true; do
-        wellcome
+        welcome
         echo -e "${color}Advanced options:${nc}"
         echo -e ""
 
@@ -348,7 +348,7 @@ merge_into() {
     local source_branch="$1"
     local target_branch="$2"
 
-    wellcome
+    welcome
     echo -e "${color}Merging $source_branch into $target_branch...${nc}"
     echo -e ""
 
@@ -384,7 +384,7 @@ merge_into() {
 # Advanced options: Update the script from https://raw.githubusercontent.com/german-egg/awt/main/awt
 # This will overwrite the current script with the latest version and change excution permissions
 update_script() {
-    wellcome
+    welcome
     echo -e "${color}Updating the script...${nc}"
     echo -e ""
 
@@ -399,7 +399,7 @@ update_script() {
 
 # Advanced options: Show the script version
 show_version() {
-    wellcome
+    welcome
     echo -e "${color}Script version:${nc} $version"
     echo -e ""
     read -p "Press Enter to continue..." -n 1 -r
@@ -444,7 +444,7 @@ check_github_cli() {
 
 # Initialize the script
 main() {
-    wellcome
+    welcome
 
     # All the checks
     check_if_repository
