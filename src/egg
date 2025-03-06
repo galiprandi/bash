@@ -1,7 +1,30 @@
 #!/bin/bash
 set -euo pipefail
 
-CONFIG_FILE="$HOME/egg.env"
+########################################
+# Other Configuration and Constants
+########################################
+readonly VERSION="20250306"
+readonly CONFIG_FILE="$HOME/egg.env"
+
+# Hardcoded Services
+readonly SRV_MONGO="service/mongo"
+readonly SRV_MYSQL="service/mysql"
+readonly SRV_MYSQL_EGG="service/mysql-egg"
+readonly SRV_HCA="service/api-hca"
+readonly SRV_SOCKET="service/api-websocket"
+readonly SRV_REDIS="service/redis-zapp-master"
+
+# Colors and formatting using ANSI escape sequences https://colors.sh/
+readonly COLOR_TEXT="\033[0m"
+readonly COLOR_LIGHT_BLUE="\033[1;94m"
+readonly COLOR_TITLE="\033[1;93m\033[4m"
+readonly COLOR_LINES="\033[1;91m"
+readonly TEXT_BOLD="\033[1m"
+readonly TEXT_NORMAL="\033[0m"
+readonly TEXT_ORANGE="\033[38;5;214m"
+readonly TEXT_PURPLE="\033[48;5;63m"
+readonly LINE="${COLOR_LINES}──────────────────────────────────────────────────────────────────────${COLOR_TEXT}"
 
 ########################################
 # Setup Configuration (Create/Update)
@@ -118,31 +141,6 @@ load_config() {
 }
 
 ########################################
-# Other Configuration and Constants
-########################################
-readonly VERSION="20250301"
-
-# Hardcoded Services
-readonly SRV_MONGO="service/mongo"
-readonly SRV_MYSQL="service/mysql"
-readonly SRV_MYSQL_EGG="service/mysql-egg"
-readonly SRV_HCA="service/api-hca"
-readonly SRV_SOCKET="service/api-websocket"
-readonly SRV_REDIS="service/redis-zapp-master"
-
-# Colors and formatting using ANSI escape sequences https://colors.sh/
-readonly COLOR_TEXT="\033[0m"
-readonly COLOR_LIGHT_BLUE="\033[1;94m"
-readonly COLOR_TITLE="\033[1;93m\033[4m"
-readonly COLOR_LINES="\033[1;91m"
-readonly TEXT_BOLD="\033[1m"
-readonly TEXT_NORMAL="\033[0m"
-readonly TEXT_ORANGE="\033[38;5;214m"
-readonly TEXT_PURPLE="\033[48;5;63m"
-
-readonly LINE="${COLOR_LINES}──────────────────────────────────────────────────────────────────────${COLOR_TEXT}"
-
-########################################
 # Utility Functions
 ########################################
 welcome() {
@@ -196,7 +194,81 @@ update_egg() {
     local temp_file="/tmp/egg_update"
     local current_file=$(realpath "$0")
     local update_url="https://raw.githubusercontent.com/galiprandi/bash/refs/heads/main/src/egg"
-    local backup_file="${current_file}.v${VERSION}"
+    local backup_file="$HOME/egg.v${VERSION}"
+
+    # Check if we have write permissions for the current file location
+    if [[ ! -w "$current_file" ]]; then
+        echo -e "⚠️ $(t_orange "This script is installed at") $(t_bold "$current_file")"
+        echo -e "   $(t_orange "which requires elevated privileges to update.")"
+        echo ""
+
+        # Ask user if they want to proceed with sudo
+        read -p "$(echo -e "${TEXT_BOLD}Use sudo to update? (y/n):${TEXT_NORMAL} ")" use_sudo
+        if [[ ! "$use_sudo" =~ ^[Yy]$ ]]; then
+            echo "Update cancelled."
+            return 1
+        fi
+
+        # Check if we have internet connectivity
+        if ! curl -s --head "$update_url" >/dev/null; then
+            echo -e "❌ $(t_orange "Update failed:") $(t_bold "Cannot connect to GitHub.")"
+            return 1
+        fi
+
+        # Download the latest version
+        echo "📥 Downloading latest version..."
+        if ! curl -s "$update_url" -o "$temp_file"; then
+            echo -e "❌ $(t_orange "Update failed:") $(t_bold "Download error.")"
+            return 1
+        fi
+
+        # Compare versions
+        local remote_version=$(grep "readonly VERSION=" "$temp_file" | cut -d'"' -f2)
+
+        if [[ "$remote_version" == "$VERSION" ]]; then
+            echo -e "✓ $(t_orange "Already up-to-date") with version $(t_bold "$VERSION")"
+            rm -f "$temp_file"
+            return 0
+        fi
+
+        # Create backup
+        echo "💾 Creating backup at $backup_file..."
+        if ! sudo cp "$current_file" "$backup_file" || ! sudo chown $(whoami): "$backup_file"; then
+            echo -e "❌ $(t_orange "Backup failed:") $(t_bold "Could not create backup.")"
+            rm -f "$temp_file"
+            return 1
+        fi
+
+        # Update using sudo (use cp instead of mv for cross-device installations)
+        echo "🔄 Installing version $remote_version..."
+        if ! sudo cp "$temp_file" "$current_file"; then
+            echo -e "❌ $(t_orange "Update failed:") $(t_bold "Could not update file with sudo.")"
+            rm -f "$temp_file"
+            return 1
+        fi
+
+        # Preserve permissions
+        if ! sudo chmod +x "$current_file"; then
+            echo -e "❌ $(t_orange "Warning:") $(t_bold "Could not set executable permissions.")"
+        fi
+
+        rm -f "$temp_file"
+
+        echo -e "✅ $(t_orange "Update successful!") Updated from $(t_bold "$VERSION") to $(t_bold "$remote_version")"
+        echo "   Backup saved as $backup_file"
+        echo "   Please restart egg to use the new version."
+
+        # Optional: Ask user if they want to restart now
+        read -p "$(echo -e "${TEXT_BOLD}Restart egg now? (y/n):${TEXT_NORMAL} ")" restart
+        if [[ "$restart" =~ ^[Yy]$ ]]; then
+            echo "Restarting egg..."
+            exec "$current_file"
+        fi
+
+        return 0
+    fi
+
+    # Continue with normal update process if we have write permissions
 
     # Check if we have internet connectivity
     if ! curl -s --head "$update_url" >/dev/null; then
@@ -222,15 +294,22 @@ update_egg() {
 
     # Backup current version with version number in filename
     echo "💾 Creating backup at $backup_file..."
-    cp "$current_file" "$backup_file"
-
-    # Replace current file with new version
-    echo "🔄 Installing version $remote_version..."
-    if ! mv "$temp_file" "$current_file"; then
-        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Could not replace file.")"
-        echo "   Backup is available at $backup_file"
+    if ! cp "$current_file" "$backup_file"; then
+        echo -e "❌ $(t_orange "Backup failed:") $(t_bold "Could not create backup.")"
+        rm -f "$temp_file"
         return 1
     fi
+
+    # Replace current file with new version (use cp instead of mv for cross-device safety)
+    echo "🔄 Installing version $remote_version..."
+    if ! cp "$temp_file" "$current_file"; then
+        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Could not replace file.")"
+        echo "   Backup is available at $backup_file"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    rm -f "$temp_file"
 
     # Preserve execution permissions
     chmod +x "$current_file"
