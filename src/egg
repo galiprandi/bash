@@ -130,7 +130,7 @@ readonly SRV_HCA="service/api-hca"
 readonly SRV_SOCKET="service/api-websocket"
 readonly SRV_REDIS="service/redis-zapp-master"
 
-# Colors and formatting using ANSI escape sequences
+# Colors and formatting using ANSI escape sequences https://colors.sh/
 readonly COLOR_TEXT="\033[0m"
 readonly COLOR_LIGHT_BLUE="\033[1;94m"
 readonly COLOR_TITLE="\033[1;93m\033[4m"
