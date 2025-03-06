@@ -4,7 +4,7 @@ set -euo pipefail
 
 version="20240801"
 
-# Cofiguration variables
+# Configuration variables
 dev_branch="develop"
 jira_ticket_url="https://eggcooperation.atlassian.net/browse"
 repository="https://github.com/german-egg/awt"
@@ -381,7 +381,7 @@ merge_into() {
 }
 
 # Advanced options: Update the script from https://raw.githubusercontent.com/german-egg/awt/main/awt
-# This will overwrite the current script with the latest version and change excution permissions
+# This will overwrite the current script with the latest version and change execution permissions
 update_script() {
     welcome
     echo -e "${color}Updating the script...${nc}"
@@ -447,7 +447,7 @@ main() {
 
     # All the checks
     check_if_repository
-    # check_github_cli
+    # check_GitHub_cli
 
     # Create a new task
     create_new_task
