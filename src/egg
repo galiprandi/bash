@@ -171,6 +171,22 @@ title() {
     br
 }
 
+t_accent() {
+    echo -e "${TEXT_BOLD}${TEXT_PURPLE}$1${COLOR_TEXT}"
+}
+
+t_blue() {
+    echo -e "${COLOR_LIGHT_BLUE}$1${COLOR_TEXT}"
+}
+
+t_bold() {
+    echo -e "${TEXT_BOLD}$1${COLOR_TEXT}"
+}
+
+t_orange() {
+    echo -e "${TEXT_ORANGE}$1${COLOR_TEXT}"
+}
+
 ########################################
 # Port Forwarding Functions
 ########################################
@@ -184,20 +200,35 @@ open_port_forward() {
     local local_port="$2"
     local remote_port="$3"
     local namespace="$4"
-    local message="🔌 ${COLOR_LIGHT_BLUE}${service_name}${TEXT_NORMAL} listening on http://localhost:$local_port"
-
+    local service_short=$(echo "$service_name" | sed 's|service/||')
+    
+    # Check if port is already in use
     if ss -tuln | grep -q ":$local_port "; then
-        echo -e "$message"
+        echo -e "🔌 $(t_orange "$service_short") on port $local_port: $(t_bold "Already in use")"
         return 1
     fi
 
-    kubectl port-forward "$service_name" "$local_port:$remote_port" -n "$namespace" &
-    echo -e "$message"
-    wait $!
+    # Start port forwarding in background
+    kubectl port-forward "$service_name" "$local_port:$remote_port" -n "$namespace" > /dev/null 2>&1 &
+    local forward_pid=$!
+    
+    # Wait briefly to check if forwarding was successful
+    sleep 0.5
+    if kill -0 $forward_pid 2>/dev/null; then
+        echo -e "🔌 $(t_orange "$service_short") listening on $(t_bold "http://localhost:$local_port")"
+    else
+        echo -e "❌ $(t_orange "$service_short") port-forward $(t_bold "failed") on port $local_port"
+        return 1
+    fi
+    
+    # Wait for the port forwarding process
+    wait $forward_pid
+    echo -e "💤 $(t_orange "$service_short") port-forward on port $local_port has terminated"
 }
 
 all_port_forwarding() {
     terminal_title "PORTS"
+    title "Opening all port forwarding..."
     open_port_forward "$SRV_MONGO" "$PORT_MONGO" 27017 "$1" &
     open_port_forward "$SRV_MYSQL" "$PORT_MYSQL" 3306 "$1" &
     open_port_forward "$SRV_MYSQL_EGG" "$PORT_MYSQL_EGG" 3306 "$1" &
