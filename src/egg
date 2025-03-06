@@ -414,6 +414,9 @@ execute_option() {
         terminal_title "DB:SQL"
         cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mysql-client/schema.prisma
         ;;
+    update)
+        update_egg
+        ;;
     -h | --help)
         show_help
         ;;
