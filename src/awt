@@ -265,13 +265,12 @@ new_task_execute() {
             }
             ;;
         6)
-
-            # Check if gh cli is installed and create a draft PR, else show an error message than PR can't be cretaed and continue
+            # Check if gh cli is installed and create a draft PR, else show an error message than PR can't be created and continue
             if gh pr create --draft --base "$dev_branch" --head "$branch_name" --title "$jira_ticket_id: $task_title" --body "This PR is related to $jira_ticket_id: $jira_ticket_url/$jira_ticket_id"; then
                 echo -e "\n✅ ${color}Step $((i + 1))/${total_steps}:${nc} ${new_task_steps[$i]}"
             else
                 echo -e "\n${color}⚠️ Draft PR could not be created. Please create it manually.${nc}"
-                echo -e "If prefer that we cretae the PR for you, please install GitHub CLI and authenticate it.${nc}"
+                echo -e "If you prefer that we create the PR for you, please install GitHub CLI and authenticate it.${nc}"
             fi
             ;;
         esac
