@@ -431,9 +431,9 @@ execute_option() {
         terminal_title "EGG"
         cd "$REPOSITORIES_PATH/egg-api/" && npx ts-node-dev --respawn src/index.ts | pino-pretty -c
         ;;
-    mentor)
-        terminal_title "MENTOR"
-        cd "$REPOSITORIES_PATH/api-mentor/" && npm run dev
+    ai)
+        terminal_title "API-AI"
+        cd "$REPOSITORIES_PATH/api-ai/" && npm run dev
         ;;
     sdk)
         terminal_title "SDK"
@@ -522,7 +522,7 @@ show_options() {
     echo -e "${TEXT_BOLD}  aw${TEXT_NORMAL}   - widget-api                                  ${TEXT_BOLD}admin${TEXT_NORMAL} - egg-admin"
     echo -e "${TEXT_BOLD}  eco${TEXT_NORMAL}  - api-ecosystem                               ${TEXT_BOLD}bko${TEXT_NORMAL} - egg-backoffice"
     echo -e "${TEXT_BOLD}  egg${TEXT_NORMAL}  - egg-api                                     ${TEXT_BOLD}lxp${TEXT_NORMAL} - egg-lxp"
-    echo -e "${TEXT_BOLD}  mentor${TEXT_NORMAL} - api-mentor                                ${TEXT_BOLD}meet${TEXT_NORMAL} - egg-meet"
+    echo -e "${TEXT_BOLD}  ai${TEXT_NORMAL}   - api-ai                                      ${TEXT_BOLD}meet${TEXT_NORMAL} - egg-meet"
     echo -e "${TEXT_BOLD}  sdk${TEXT_NORMAL}   - egg-video-sdk"
     echo -e "${TEXT_BOLD}  sign${TEXT_NORMAL}  - api-signup"
     echo -e "${TEXT_BOLD}  users${TEXT_NORMAL} - api-users"
