@@ -461,7 +461,7 @@ execute_option() {
         br
         ;;
     fd)
-        aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
+        gcloud container clusters get-credentials egg-gke-develop --zone us-central1-a --project egg-prod-api
         all_port_forwarding "development"
         ;;
     fo)
