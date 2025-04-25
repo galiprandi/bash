@@ -402,7 +402,7 @@ execute_option() {
     admin)
         terminal_title "ADMIN"
         export NODE_OPTIONS=--openssl-legacy-provider
-        cd "$REPOSITORIES_PATH/egg-admin/" && yarn start
+        cd "$REPOSITORIES_PATH/egg-admin/" && npm start
         ;;
     bko)
         terminal_title "BKO"
@@ -410,15 +410,15 @@ execute_option() {
         ;;
     lxp)
         terminal_title "LXP"
-        cd "$REPOSITORIES_PATH/egg-lxp" && pnpm run start
+        cd "$REPOSITORIES_PATH/egg-lxp" && npm run start
         ;;
     meet)
         terminal_title "MEET"
-        cd "$REPOSITORIES_PATH/egg-meet/" && pnpm run dev
+        cd "$REPOSITORIES_PATH/egg-meet/" && npm run dev
         ;;
     auth)
         terminal_title "AUTH"
-        cd "$REPOSITORIES_PATH/egg-auth/" && pnpm run dev | pino-pretty -c
+        cd "$REPOSITORIES_PATH/egg-auth/" && npm run dev | pino-pretty -c
         ;;
     aw)
         cd "$REPOSITORIES_PATH/egg-widget-api/" && NODE_ENV=development npm run start | pino-pretty -c
@@ -437,7 +437,7 @@ execute_option() {
         ;;
     sdk)
         terminal_title "SDK"
-        cd "$REPOSITORIES_PATH/egg-video-sdk/" && pnpm run start
+        cd "$REPOSITORIES_PATH/egg-video-sdk/" && npm run start
         ;;
     sign)
         terminal_title "SIGN"
@@ -449,7 +449,7 @@ execute_option() {
         ;;
     ws)
         terminal_title "WS"
-        cd "$REPOSITORIES_PATH/egg-api-websocket/" && pnpm run dev
+        cd "$REPOSITORIES_PATH/egg-api-websocket/" && npm run dev
         ;;
     fc)
         title "Closing all port forwarding..."
