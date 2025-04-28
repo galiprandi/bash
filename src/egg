@@ -15,7 +15,7 @@ readonly SERVICES=(
     "mysql-egg|3306|mysql-egg"
     "api-hca|5000|api-hca"
     "api-websocket|6060|api-websocket"
-    "redis|6379|redis-zapp-master"
+    "redis|6379|redis"
 )
 
 # namespace:offset
@@ -234,8 +234,7 @@ print_port_forward_summary() {
     done
 
     echo -e "${LINE}"
-    echo -e "✅ ${total_success} services running"
-    echo -e "❌ ${total_failed} services failed"
+    echo -e "🔌 ${total_success} services running, ${total_failed} services failed"
     br
     echo -ne "\a"  # <-- 🎵 beep aquí!
 }
