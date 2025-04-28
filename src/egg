@@ -1,21 +1,37 @@
 #!/bin/bash
 set -euo pipefail
+IFS=$'\n\t'
 
 ########################################
-# Other Configuration and Constants
+# CONFIGURATION AND CONSTANTS
 ########################################
-readonly VERSION="20250306"
+readonly VERSION="20250428"
 readonly CONFIG_FILE="$HOME/egg.env"
 
-# Hardcoded Services
-readonly SRV_MONGO="service/mongo"
-readonly SRV_MYSQL="service/mysql"
-readonly SRV_MYSQL_EGG="service/mysql-egg"
-readonly SRV_HCA="service/api-hca"
-readonly SRV_SOCKET="service/api-websocket"
-readonly SRV_REDIS="service/redis-zapp-master"
+# name|remote_port|k8s_service
+readonly SERVICES=(
+    "mongo|27017|mongo"
+    "mysql|3306|mysql"
+    "mysql-egg|3306|mysql-egg"
+    "api-hca|5000|api-hca"
+    "api-websocket|6060|api-websocket"
+    "redis|6379|redis-zapp-master"
+)
 
-# Colors and formatting using ANSI escape sequences https://colors.sh/
+# namespace:offset
+readonly NAMESPACE_PORT_OFFSETS=(
+    "development:0"
+    "demo:20"
+    "production:30"
+)
+
+declare -A PORT_FORWARD_SUCCESS
+declare -A PORT_FORWARD_FAILED
+
+readonly PORT_FORWARD_PID_DIR="/tmp/egg-ports"
+readonly PORT_FORWARD_LOG_DIR="/tmp/egg-ports-logs"
+
+# Colors
 readonly COLOR_TEXT="\033[0m"
 readonly COLOR_LIGHT_BLUE="\033[1;94m"
 readonly COLOR_TITLE="\033[1;93m\033[4m"
@@ -23,525 +39,354 @@ readonly COLOR_LINES="\033[1;91m"
 readonly TEXT_BOLD="\033[1m"
 readonly TEXT_NORMAL="\033[0m"
 readonly TEXT_ORANGE="\033[38;5;214m"
-readonly TEXT_PURPLE="\033[48;5;63m"
-readonly LINE="${COLOR_LINES}──────────────────────────────────────────────────────────────────────${COLOR_TEXT}"
+readonly COLOR_PURPLE="\033[48;5;63m"
+readonly LINE="${COLOR_LINES}───────────────────────────────────────────────────────────────────────────────${COLOR_TEXT}"
 
 ########################################
-# Setup Configuration (Create/Update)
+# HELPER FUNCTIONS
 ########################################
-setup_config() {
-    # If the configuration file exists, load it.
-    if [[ -f "$CONFIG_FILE" ]]; then
-        source "$CONFIG_FILE"
+
+read_input() {
+    local prompt="$1"
+    local default="$2"
+    local result
+    echo -ne "${TEXT_BOLD}${prompt} (default: ${default}): ${TEXT_NORMAL}"
+    read -r result
+    echo "${result:-$default}"
+}
+
+prepare_pid_dir() {
+    mkdir -p "$PORT_FORWARD_PID_DIR"
+    mkdir -p "$PORT_FORWARD_LOG_DIR"
+}
+
+cleanup_logs() {
+    rm -rf "$PORT_FORWARD_LOG_DIR"
+}
+
+save_pid() {
+    local name="$1"
+    local pid="$2"
+    echo "$pid" > "${PORT_FORWARD_PID_DIR}/${name}.pid"
+}
+
+kill_all_port_forwards() {
+    if [[ -d "$PORT_FORWARD_PID_DIR" ]]; then
+        for pidfile in "$PORT_FORWARD_PID_DIR"/*.pid; do
+            if [[ -f "$pidfile" ]]; then
+                local pid
+                pid=$(<"$pidfile")
+                if kill "$pid" 2>/dev/null; then
+                    echo "🔌 Closed port-forward PID $pid"
+                fi
+                rm -f "$pidfile"
+            fi
+        done
+        rmdir "$PORT_FORWARD_PID_DIR" 2>/dev/null || true
+    else
+        echo "No active port-forwards."
     fi
+    cleanup_logs
+}
+
+terminal_title() { echo -ne "\033]0;$1\007"; }
+br() { echo ""; }
+title() { echo -e "${TEXT_BOLD}${TEXT_ORANGE}$1${COLOR_TEXT}"; br; }
+t_orange() { echo -e "${TEXT_ORANGE}$1${COLOR_TEXT}"; }
+t_bold() { echo -e "${TEXT_BOLD}$1${COLOR_TEXT}"; }
+welcome() {
+    clear
+    echo -e "$LINE"
+    echo -e "                 🚀 $(t_orange "Egg Launcher (v${VERSION})") 🚀"
+    echo -e "$LINE"
+    echo ""
+}
+
+abort() {
+    echo "Goodbye!"
+    kill -INT $$
+}
+
+########################################
+# CONFIGURATION MANAGEMENT
+########################################
+
+setup_config() {
+    [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
     local updated=0
 
-    # First: Git user information
     if [[ -z "${GIT_USER_NAME:-}" ]]; then
-        local default_git_name
-        default_git_name=$(git config --get user.name || echo "")
-        read -p "Enter your name (default: ${default_git_name:-none}): " input
-        GIT_USER_NAME=${input:-$default_git_name}
+        GIT_USER_NAME=$(read_input "Enter your name" "$(git config --get user.name || echo "")")
         updated=1
     fi
 
     if [[ -z "${GIT_USER_EMAIL:-}" ]]; then
-        local default_git_email
-        default_git_email=$(git config --get user.email || echo "")
-        read -p "Enter your email (default: ${default_git_email:-none}): " input
-        GIT_USER_EMAIL=${input:-$default_git_email}
+        GIT_USER_EMAIL=$(read_input "Enter your email" "$(git config --get user.email || echo "")")
         updated=1
     fi
 
-    # Second: Base repository folder
     if [[ -z "${REPOSITORIES_PATH:-}" ]]; then
-        read -p "Enter the base folder that contains all your repos (default: \$HOME/Github): " input
-        REPOSITORIES_PATH=${input:-"$HOME/Github"}
+        REPOSITORIES_PATH=$(read_input "Enter your repositories path" "$HOME/Github")
         updated=1
     fi
 
-    # Then: Port settings
-    if [[ -z "${PORT_MONGO:-}" ]]; then
-        read -p "Enter the port for MongoDB (default: 27017): " input
-        PORT_MONGO=${input:-27017}
-        updated=1
-    fi
-
-    if [[ -z "${PORT_MYSQL:-}" ]]; then
-        read -p "Enter the port for MySQL (default: 3306): " input
-        PORT_MYSQL=${input:-3306}
-        updated=1
-    fi
-
-    if [[ -z "${PORT_MYSQL_EGG:-}" ]]; then
-        read -p "Enter the port for MySQL EGG (default: 3307): " input
-        PORT_MYSQL_EGG=${input:-3307}
-        updated=1
-    fi
-
-    if [[ -z "${PORT_HCA:-}" ]]; then
-        read -p "Enter the port for HCA (default: 5000): " input
-        PORT_HCA=${input:-5000}
-        updated=1
-    fi
-
-    if [[ -z "${PORT_SOCKET:-}" ]]; then
-        read -p "Enter the port for Socket (default: 6060): " input
-        PORT_SOCKET=${input:-6060}
-        updated=1
-    fi
-
-    if [[ -z "${PORT_REDIS:-}" ]]; then
-        read -p "Enter the port for Redis (default: 6379): " input
-        PORT_REDIS=${input:-6379}
-        updated=1
-    fi
-
-    # If any variable was updated or the file doesn't exist, confirm and write the configuration file.
     if [[ $updated -eq 1 || ! -f "$CONFIG_FILE" ]]; then
         echo ""
-        echo "You have entered:"
-        echo "  GIT_USER_NAME     = $GIT_USER_NAME"
-        echo "  GIT_USER_EMAIL    = $GIT_USER_EMAIL"
-        echo "  REPOSITORIES_PATH = $REPOSITORIES_PATH"
-        echo "  PORT_MONGO        = $PORT_MONGO"
-        echo "  PORT_MYSQL        = $PORT_MYSQL"
-        echo "  PORT_MYSQL_EGG    = $PORT_MYSQL_EGG"
-        echo "  PORT_HCA          = $PORT_HCA"
-        echo "  PORT_SOCKET       = $PORT_SOCKET"
-        echo "  PORT_REDIS        = $PORT_REDIS"
-        echo ""
-        read -p "Are these settings correct? (y/n): " confirm
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "Configuration aborted."
-            exit 1
-        fi
+        echo "Saving configuration..."
         cat <<EOF >"$CONFIG_FILE"
-# Egg configuration file
 GIT_USER_NAME="$GIT_USER_NAME"
 GIT_USER_EMAIL="$GIT_USER_EMAIL"
 REPOSITORIES_PATH="$REPOSITORIES_PATH"
-PORT_MONGO=$PORT_MONGO
-PORT_MYSQL=$PORT_MYSQL
-PORT_MYSQL_EGG=$PORT_MYSQL_EGG
-PORT_HCA=$PORT_HCA
-PORT_SOCKET=$PORT_SOCKET
-PORT_REDIS=$PORT_REDIS
 EOF
-        echo "Configuration file updated at $CONFIG_FILE"
+        echo "Configuration saved: $CONFIG_FILE"
     fi
 }
 
-########################################
-# Load Configuration
-########################################
 load_config() {
     setup_config
 }
 
 ########################################
-# Utility Functions
+# PORT FORWARDING
 ########################################
-welcome() {
-    clear
-    echo -e "$LINE"
-    echo -e " ${COLOR_TITLE}Egg Launcher${COLOR_TEXT}                           v${VERSION} by Germán Aliprandi"
-    echo -e "$LINE"
-}
-
-abort() {
-    echo "Have a nice day!"
-    kill -INT $$
-}
-
-terminal_title() {
-    echo -ne "\033]0;$1\007"
-}
-
-br() {
-    echo ""
-}
-
-title() {
-    echo -e "${TEXT_BOLD}${TEXT_ORANGE}$1${COLOR_TEXT}"
-    br
-}
-
-t_accent() {
-    echo -e "${TEXT_BOLD}${TEXT_PURPLE}$1${COLOR_TEXT}"
-}
-
-t_blue() {
-    echo -e "${COLOR_LIGHT_BLUE}$1${COLOR_TEXT}"
-}
-
-t_bold() {
-    echo -e "${TEXT_BOLD}$1${COLOR_TEXT}"
-}
-
-t_orange() {
-    echo -e "${TEXT_ORANGE}$1${COLOR_TEXT}"
-}
-
-########################################
-# Update Functions
-########################################
-update_egg() {
-    terminal_title "UPDATE"
-    title "Updating Egg Launcher..."
-
-    local temp_file="/tmp/egg_update"
-    local current_file=$(realpath "$0")
-    local update_url="https://raw.githubusercontent.com/galiprandi/bash/refs/heads/main/src/egg"
-    local backup_file="$HOME/egg.v${VERSION}"
-
-    # Check if we have write permissions for the current file location
-    if [[ ! -w "$current_file" ]]; then
-        echo -e "⚠️ $(t_orange "This script is installed at") $(t_bold "$current_file")"
-        echo -e "   $(t_orange "which requires elevated privileges to update.")"
-        echo ""
-
-        # Ask user if they want to proceed with sudo
-        read -p "$(echo -e "${TEXT_BOLD}Use sudo to update? (y/n):${TEXT_NORMAL} ")" use_sudo
-        if [[ ! "$use_sudo" =~ ^[Yy]$ ]]; then
-            echo "Update cancelled."
-            return 1
-        fi
-
-        # Check if we have internet connectivity
-        if ! curl -s --head "$update_url" >/dev/null; then
-            echo -e "❌ $(t_orange "Update failed:") $(t_bold "Cannot connect to GitHub.")"
-            return 1
-        fi
-
-        # Download the latest version
-        echo "📥 Downloading latest version..."
-        if ! curl -s "$update_url" -o "$temp_file"; then
-            echo -e "❌ $(t_orange "Update failed:") $(t_bold "Download error.")"
-            return 1
-        fi
-
-        # Compare versions
-        local remote_version=$(grep "readonly VERSION=" "$temp_file" | cut -d'"' -f2)
-
-        if [[ "$remote_version" == "$VERSION" ]]; then
-            echo -e "✓ $(t_orange "Already up-to-date") with version $(t_bold "$VERSION")"
-            rm -f "$temp_file"
-            return 0
-        fi
-
-        # Create backup
-        echo "💾 Creating backup at $backup_file..."
-        if ! sudo cp "$current_file" "$backup_file" || ! sudo chown $(whoami): "$backup_file"; then
-            echo -e "❌ $(t_orange "Backup failed:") $(t_bold "Could not create backup.")"
-            rm -f "$temp_file"
-            return 1
-        fi
-
-        # Update using sudo (use cp instead of mv for cross-device installations)
-        echo "🔄 Installing version $remote_version..."
-        if ! sudo cp "$temp_file" "$current_file"; then
-            echo -e "❌ $(t_orange "Update failed:") $(t_bold "Could not update file with sudo.")"
-            rm -f "$temp_file"
-            return 1
-        fi
-
-        # Preserve permissions
-        if ! sudo chmod +x "$current_file"; then
-            echo -e "❌ $(t_orange "Warning:") $(t_bold "Could not set executable permissions.")"
-        fi
-
-        rm -f "$temp_file"
-
-        echo -e "✅ $(t_orange "Update successful!") Updated from $(t_bold "$VERSION") to $(t_bold "$remote_version")"
-        echo "   Backup saved as $backup_file"
-        echo "   Please restart egg to use the new version."
-
-        # Optional: Ask user if they want to restart now
-        read -p "$(echo -e "${TEXT_BOLD}Restart egg now? (y/n):${TEXT_NORMAL} ")" restart
-        if [[ "$restart" =~ ^[Yy]$ ]]; then
-            echo "Restarting egg..."
-            exec "$current_file"
-        fi
-
-        return 0
-    fi
-
-    # Continue with normal update process if we have write permissions
-
-    # Check if we have internet connectivity
-    if ! curl -s --head "$update_url" >/dev/null; then
-        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Cannot connect to GitHub.")"
-        return 1
-    fi
-
-    # Download the latest version
-    echo "📥 Downloading latest version..."
-    if ! curl -s "$update_url" -o "$temp_file"; then
-        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Download error.")"
-        return 1
-    fi
-
-    # Compare versions
-    local remote_version=$(grep "readonly VERSION=" "$temp_file" | cut -d'"' -f2)
-
-    if [[ "$remote_version" == "$VERSION" ]]; then
-        echo -e "✓ $(t_orange "Already up-to-date") with version $(t_bold "$VERSION")"
-        rm -f "$temp_file"
-        return 0
-    fi
-
-    # Backup current version with version number in filename
-    echo "💾 Creating backup at $backup_file..."
-    if ! cp "$current_file" "$backup_file"; then
-        echo -e "❌ $(t_orange "Backup failed:") $(t_bold "Could not create backup.")"
-        rm -f "$temp_file"
-        return 1
-    fi
-
-    # Replace current file with new version (use cp instead of mv for cross-device safety)
-    echo "🔄 Installing version $remote_version..."
-    if ! cp "$temp_file" "$current_file"; then
-        echo -e "❌ $(t_orange "Update failed:") $(t_bold "Could not replace file.")"
-        echo "   Backup is available at $backup_file"
-        rm -f "$temp_file"
-        return 1
-    fi
-
-    rm -f "$temp_file"
-
-    # Preserve execution permissions
-    chmod +x "$current_file"
-
-    echo -e "✅ $(t_orange "Update successful!") Updated from $(t_bold "$VERSION") to $(t_bold "$remote_version")"
-    echo "   Backup saved as $backup_file"
-    echo "   Please restart egg to use the new version."
-
-    # Optional: Ask user if they want to restart now
-    read -p "$(echo -e "${TEXT_BOLD}Restart egg now? (y/n):${TEXT_NORMAL} ")" restart
-    if [[ "$restart" =~ ^[Yy]$ ]]; then
-        echo "Restarting egg..."
-        exec "$current_file"
-    fi
-
-    return 0
-}
-
-########################################
-# Port Forwarding Functions
-########################################
-kill_port() {
-    sudo fuser -k "$1"/tcp &
-    wait $!
-}
 
 open_port_forward() {
-    local service_name="$1"
+    set +e
+    local name="$1"
     local local_port="$2"
     local remote_port="$3"
-    local namespace="$4"
-    local service_short=$(echo "$service_name" | sed 's|service/||')
+    local service="$4"
+    local namespace="$5"
 
-    # Check if port is already in use
+    # Ajuste dinámico para producción
+    local service_k8s="$service"
+
+    if [[ "$namespace" == "production" ]]; then
+        case "$service" in
+            mysql-egg)
+                service_k8s="mysql"
+                ;;
+            redis)
+                service_k8s="redis-master"
+                ;;
+            *)
+                service_k8s="$service"
+                ;;
+        esac
+    fi
+
     if ss -tuln | grep -q ":$local_port "; then
-        echo -e "🔌 $(t_orange "$service_short") on port $local_port: $(t_bold "Already in use")"
+        PORT_FORWARD_SUCCESS["$namespace"]+=$'\n'"🔌 ${name}:  http://localhost:${local_port} (Already running)"
+        set -e
+        return 0
+    fi
+
+    if ! kubectl get service "$service_k8s" -n "$namespace" >/dev/null 2>&1; then
+        PORT_FORWARD_FAILED["$namespace"]+=$'\n'"❌ ${name}:  Not found in namespace"
+        set -e
         return 1
     fi
 
-    # Start port forwarding in background
-    kubectl port-forward "$service_name" "$local_port:$remote_port" -n "$namespace" >/dev/null 2>&1 &
-    local forward_pid=$!
+    (kubectl port-forward service/"$service_k8s" "$local_port:$remote_port" -n "$namespace" >/dev/null 2>&1) &
+    local pid=$!
 
-    # Wait briefly to check if forwarding was successful
-    sleep 0.5
-    if kill -0 $forward_pid 2>/dev/null; then
-        echo -e "🔌 $(t_orange "$service_short") listening on $(t_bold "http://localhost:$local_port")"
+    sleep 2
+
+    if kill -0 "$pid" 2>/dev/null; then
+        save_pid "$name" "$pid"
+        PORT_FORWARD_SUCCESS["$namespace"]+=$'\n'"🔌 ${name}:  http://localhost:${local_port} (PID ${pid})"
     else
-        echo -e "❌ $(t_orange "$service_short") port-forward $(t_bold "failed") on port $local_port"
-        return 1
+        kill "$pid" 2>/dev/null || true
+        rm -f "${PORT_FORWARD_PID_DIR}/${name}.pid"
+        PORT_FORWARD_FAILED["$namespace"]+=$'\n'"❌ ${name}:  Port-forward failed"
     fi
-
-    # Wait for the port forwarding process
-    wait $forward_pid
-    echo -e "💤 $(t_orange "$service_short") port-forward on port $local_port has terminated"
+    set -e
 }
 
-all_port_forwarding() {
+print_port_forward_summary() {
+    br
+    echo -e "${LINE}"
+    title "📋 Port-Forward Summary"
+
+    local total_success=0
+    local total_failed=0
+
+    for ns in development demo production; do
+        echo -e "$(t_bold "$ns")"
+        echo -e "-------------------------------------------------------------"
+
+        if [[ -n "${PORT_FORWARD_SUCCESS[$ns]:-}" ]]; then
+            echo -e "${PORT_FORWARD_SUCCESS[$ns]}"
+            local count_success
+            count_success=$(echo "${PORT_FORWARD_SUCCESS[$ns]}" | grep -c '^🔌')
+            total_success=$((total_success + count_success))
+        fi
+
+        if [[ -n "${PORT_FORWARD_FAILED[$ns]:-}" ]]; then
+            echo -e "${PORT_FORWARD_FAILED[$ns]}"
+            local count_failed
+            count_failed=$(echo "${PORT_FORWARD_FAILED[$ns]}" | grep -c '^❌')
+            total_failed=$((total_failed + count_failed))
+        fi
+
+        echo ""
+    done
+
+    echo -e "${LINE}"
+    echo -e "✅ ${total_success} services running"
+    echo -e "❌ ${total_failed} services failed"
+    br
+    echo -ne "\a"  # <-- 🎵 beep aquí!
+}
+
+
+
+open_all_namespaces() {
+    prepare_pid_dir
     terminal_title "PORTS"
-    title "Opening all port forwarding..."
-    open_port_forward "$SRV_MONGO" "$PORT_MONGO" 27017 "$1" &
-    open_port_forward "$SRV_MYSQL" "$PORT_MYSQL" 3306 "$1" &
-    open_port_forward "$SRV_MYSQL_EGG" "$PORT_MYSQL_EGG" 3306 "$1" &
-    open_port_forward "$SRV_HCA" "$PORT_HCA" 5000 "$1" &
-    open_port_forward "$SRV_SOCKET" "$PORT_SOCKET" 6060 "$1" &
-    open_port_forward "$SRV_REDIS" "$PORT_REDIS" 6379 "$1" &
-    wait
+    title "Connecting and opening ports for development, demo, production..."
+
+    # Recorrer cada namespace y su offset
+    for ns_offset in "${NAMESPACE_PORT_OFFSETS[@]}"; do
+        IFS=':' read -r namespace offset <<< "$ns_offset"
+
+        case "$namespace" in
+            development)
+                echo "🔑 Setting credentials for development (GKE)..."
+                gcloud container clusters get-credentials egg-gke-develop --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
+                ;;
+            demo)
+                echo "🔑 Setting credentials for demo (GKE)..."
+                gcloud container clusters get-credentials egg-gke-demo --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
+                ;;
+            production)
+                echo "🔑 Setting credentials for production (AWS EKS)..."
+                aws eks update-kubeconfig --name egg-eks-pro --region us-east-1 >/dev/null 2>&1
+                ;;
+            *)
+                echo "❌ Unknown namespace $namespace"
+                continue
+                ;;
+        esac
+
+        # Una vez conectado, abrir los services de este namespace
+        for entry in "${SERVICES[@]}"; do
+            IFS='|' read -r service_short remote_port service_k8s <<< "$entry"
+            local_port=$((remote_port + offset))
+            open_port_forward "${service_short}-${namespace}" "$local_port" "$remote_port" "$service_k8s" "$namespace" || true
+        done
+    done
+
+    print_port_forward_summary
 }
 
 ########################################
-# Log Functions
+# FRONTENDS
 ########################################
+
+start_frontend() {
+    local project="$1"
+    local cmd="$2"
+    terminal_title "$project"
+    cd "$REPOSITORIES_PATH/$project" && eval "$cmd"
+}
+
+########################################
+# APIs
+########################################
+
+start_api() {
+    local project="$1"
+    local cmd="$2"
+    terminal_title "$project"
+    cd "$REPOSITORIES_PATH/$project" && eval "$cmd" | pino-pretty -c
+}
+
+########################################
+# DATABASES
+########################################
+
+open_prisma_studio() {
+    local schema="$1"
+    terminal_title "Prisma Studio"
+    cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema "$schema"
+}
+
+########################################
+# LOGS
+########################################
+
 show_service_log() {
     local service="$1"
     local namespace="${2:-development}"
-    terminal_title "📜 ${service}:${namespace}"
+    terminal_title "Logs $service ($namespace)"
     echo -e "${COLOR_TITLE}Showing logs for ${service} in namespace ${namespace}${TEXT_NORMAL}"
     kubectl logs -f -l app="$service" -n "$namespace" --all-containers=true | pino-pretty -c
 }
 
 ########################################
-# Command Execution and Options
+# MENU EXECUTION
 ########################################
+
 execute_option() {
     case "$1" in
-    adm)
-        terminal_title "ADM"
-        cd "$REPOSITORIES_PATH/egg-adm/" && npm run dev
-        ;;
-    admin)
-        terminal_title "ADMIN"
-        export NODE_OPTIONS=--openssl-legacy-provider
-        cd "$REPOSITORIES_PATH/egg-admin/" && npm start
-        ;;
-    bko)
-        terminal_title "BKO"
-        cd "$REPOSITORIES_PATH/egg-backoffice/" && pnpm run start
-        ;;
-    lxp)
-        terminal_title "LXP"
-        cd "$REPOSITORIES_PATH/egg-lxp" && npm run start
-        ;;
-    meet)
-        terminal_title "MEET"
-        cd "$REPOSITORIES_PATH/egg-meet/" && npm run dev
-        ;;
-    auth)
-        terminal_title "AUTH"
-        cd "$REPOSITORIES_PATH/egg-auth/" && npm run dev | pino-pretty -c
-        ;;
-    aw)
-        cd "$REPOSITORIES_PATH/egg-widget-api/" && NODE_ENV=development npm run start | pino-pretty -c
-        ;;
-    eco)
-        terminal_title "ECO"
-        cd "$REPOSITORIES_PATH/api-ecosystem/" && npm run start:dev | pino-pretty -c
-        ;;
-    egg)
-        terminal_title "EGG"
-        cd "$REPOSITORIES_PATH/egg-api/" && npx ts-node-dev --respawn src/index.ts | pino-pretty -c
-        ;;
-    ai)
-        terminal_title "API-AI"
-        cd "$REPOSITORIES_PATH/api-ai/" && npm run dev
-        ;;
-    sdk)
-        terminal_title "SDK"
-        cd "$REPOSITORIES_PATH/egg-video-sdk/" && npm run start
-        ;;
-    sign)
-        terminal_title "SIGN"
-        cd "$REPOSITORIES_PATH/egg-api-signup" && npm run dev
-        ;;
-    users)
-        terminal_title "USERS"
-        cd "$REPOSITORIES_PATH/api-user/" && npm run start:dev | pino-pretty -c
-        ;;
-    ws)
-        terminal_title "WS"
-        cd "$REPOSITORIES_PATH/egg-api-websocket/" && npm run dev
-        ;;
-    fc)
-        title "Closing all port forwarding..."
-        # Find and kill only kubectl port-forward processes
-        for pid in $(pgrep -f "kubectl port-forward"); do
-            kill $pid 2>/dev/null || sudo kill $pid 2>/dev/null
-        done
-        echo "🔌 All port forwarding closed successfully."
-        br
-        ;;
-    fd)
-        gcloud container clusters get-credentials egg-gke-develop --zone us-central1-a --project egg-prod-api
-        all_port_forwarding "development"
-        ;;
-    fo)
-        aws eks update-kubeconfig --name egg-eks-dem --region us-east-1
-        all_port_forwarding "demo"
-        ;;
-    fp)
-        aws eks update-kubeconfig --name egg-eks-pro --region us-east-1
-        all_port_forwarding "production"
-        ;;
-    fs)
-        aws eks update-kubeconfig --name egg-eks-dev --region us-east-1
-        all_port_forwarding "staging"
-        ;;
+    adm) start_frontend "egg-adm" "npm run dev" ;;
+    admin) start_frontend "egg-admin" "NODE_OPTIONS=--openssl-legacy-provider npm start" ;;
+    bko) start_frontend "egg-backoffice" "pnpm run start" ;;
+    lxp) start_frontend "egg-lxp" "npm run start" ;;
+    meet) start_frontend "egg-meet" "npm run dev" ;;
+    auth) start_api "egg-auth" "npm run dev" ;;
+    aw) start_api "egg-widget-api" "NODE_ENV=development npm run start" ;;
+    eco) start_api "api-ecosystem" "npm run start:dev" ;;
+    egg) start_api "egg-api" "npx ts-node-dev --respawn src/index.ts" ;;
+    ai) start_frontend "api-ai" "npm run dev" ;;
+    sdk) start_frontend "egg-video-sdk" "npm run start" ;;
+    sign) start_frontend "egg-api-signup" "npm run dev" ;;
+    users) start_api "api-user" "npm run start:dev" ;;
+    ws) start_api "egg-api-websocket" "npm run dev" ;;
+    mongo) open_prisma_studio "prisma/mongo-client/schema.prisma" ;;
+    sql) open_prisma_studio "prisma/mysql-client/schema.prisma" ;;
+    pf) open_all_namespaces ;;
+    pc) title "Closing all port-forwarding..." ; kill_all_port_forwards ; br ;;
     log)
-        echo -e "${COLOR_TITLE}Services:${TEXT_NORMAL} api-signup, api-egg, api-websocket, api-hca, mongo, mysql, mysql-egg, redis-zapp-master"
+        echo -e "${COLOR_TITLE}Available services:${TEXT_NORMAL} api-signup, api-egg, api-websocket, api-hca, mongo, mysql, mysql-egg, redis-zapp-master"
         read -p "Enter service name [api-signup]: " service
         service="${service:-api-signup}"
-        echo -e "${COLOR_TITLE}Namespaces:${TEXT_NORMAL} development, staging, demo, production"
+        echo -e "${COLOR_TITLE}Namespaces:${TEXT_NORMAL} development, demo, production"
         read -p "Enter namespace [development]: " namespace
         namespace="${namespace:-development}"
         show_service_log "$service" "$namespace"
         ;;
-    mongo)
-        terminal_title "DB:MONGO"
-        cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mongo-client/schema.prisma
-        ;;
-    sql)
-        terminal_title "DB:SQL"
-        cd "$REPOSITORIES_PATH/egg-api-signup" && npx prisma studio --schema prisma/mysql-client/schema.prisma
-        ;;
-    update)
-        update_egg
-        ;;
-    -h | --help)
-        show_help
-        ;;
-    x)
-        abort
-        ;;
+    x) abort ;;
     *)
         welcome
         echo "Invalid option: $1"
-        echo "Use -h or --help for usage information"
         exit 1
         ;;
     esac
 }
 
-########################################
-# Menu and Help Functions
-########################################
 show_options() {
-    echo "  List of available options:"
-    echo ""
-    echo -e "  $(title "APIs")                                               $(title "Frontends")"
-    echo -e "${TEXT_BOLD}  auth${TEXT_NORMAL} - api-auth                                    ${TEXT_BOLD}adm${TEXT_NORMAL} - egg-adm"
-    echo -e "${TEXT_BOLD}  aw${TEXT_NORMAL}   - widget-api                                  ${TEXT_BOLD}admin${TEXT_NORMAL} - egg-admin"
-    echo -e "${TEXT_BOLD}  eco${TEXT_NORMAL}  - api-ecosystem                               ${TEXT_BOLD}bko${TEXT_NORMAL} - egg-backoffice"
-    echo -e "${TEXT_BOLD}  egg${TEXT_NORMAL}  - egg-api                                     ${TEXT_BOLD}lxp${TEXT_NORMAL} - egg-lxp"
-    echo -e "${TEXT_BOLD}  ai${TEXT_NORMAL}   - api-ai                                      ${TEXT_BOLD}meet${TEXT_NORMAL} - egg-meet"
-    echo -e "${TEXT_BOLD}  sdk${TEXT_NORMAL}   - egg-video-sdk"
-    echo -e "${TEXT_BOLD}  sign${TEXT_NORMAL}  - api-signup"
-    echo -e "${TEXT_BOLD}  users${TEXT_NORMAL} - api-users"
-    echo -e "${TEXT_BOLD}  ws${TEXT_NORMAL}    - websocket-api"
-    echo ""
-    echo -e "  $(title "Ports")                                                $(title "Other")"
-    echo -e "${TEXT_BOLD}  fc${TEXT_NORMAL}   - Close all port forwarding                     ${TEXT_BOLD}log${TEXT_NORMAL}   - Show logs for all services"
-    echo -e "${TEXT_BOLD}  fd${TEXT_NORMAL}   - Development Ports                             ${TEXT_BOLD}mongo${TEXT_NORMAL} - mongo"
-    echo -e "${TEXT_BOLD}  fo${TEXT_NORMAL}   - Demo Ports                                    ${TEXT_BOLD}sql${TEXT_NORMAL}   - sql"
-    echo -e "${TEXT_BOLD}  fp${TEXT_NORMAL}   - Prod Ports                                    ${TEXT_BOLD}update${TEXT_NORMAL} - Update egg script"
-    echo -e "${TEXT_BOLD}  fs${TEXT_NORMAL}   - Staging Ports                                 ${TEXT_BOLD}h${TEXT_NORMAL}     - Help"
-    echo -e "                                                       ${TEXT_BOLD}x${TEXT_NORMAL}     - Exit"
-}
-
-show_help() {
-    echo "Egg Launcher v${VERSION}"
-    echo "Usage: $0 [OPTION]"
-    echo ""
-    show_options
+    echo -e "$(t_orange "📦 APIs")                                     $(t_orange "🌐 Frontends")"
+    echo -e "────────────────────────────────────       ────────────────────────────────────"
+    echo -e "🔹 auth        - egg-auth                  🔹 adm        - egg-adm"
+    echo -e "🔹 aw          - widget-api                🔹 admin      - egg-admin"
+    echo -e "🔹 eco         - api-ecosystem             🔹 bko        - egg-backoffice"
+    echo -e "🔹 egg         - egg-api                   🔹 lxp        - egg-lxp"
+    echo -e "🔹 ai          - api-ai                    🔹 meet       - egg-meet"
+    echo -e "🔹 sdk         - egg-video-sdk"
+    echo -e "🔹 sign        - api-signup"
+    echo -e "🔹 users       - api-users"
+    echo -e "🔹 ws          - egg-websocket"
+    echo -e ""
+    echo -e "$(t_orange "🛠️  Ports")                                    $(t_orange "🎛️  Extras")"
+    echo -e "────────────────────────────────────       ────────────────────────────────────"
+    echo -e "🔹 pf          - Forward all ports         🔹 log        - Show service logs"
+    echo -e "🔹 pc          - Close all ports           🔹 mongo      - Prisma Studio (Mongo)"
+    echo -e "🔹 sql         - Prisma Studio (MySQL)     🔹 x          - Exit"
+    echo -e ""
+    echo -e "$LINE"
 }
 
 main_menu() {
@@ -553,7 +398,7 @@ main_menu() {
 }
 
 ########################################
-# Main Execution
+# MAIN EXECUTION
 ########################################
 load_config
 if [[ $# -eq 0 ]]; then
