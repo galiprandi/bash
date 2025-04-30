@@ -15,7 +15,7 @@ readonly SERVICES=(
     "mysql-egg|3306|mysql-egg"
     "api-hca|5000|api-hca"
     "api-websocket|6060|api-websocket"
-    "redis|6379|redis"
+    "redis|6379|redis-master"
 )
 
 # namespace:offset
@@ -67,7 +67,7 @@ cleanup_logs() {
 save_pid() {
     local name="$1"
     local pid="$2"
-    echo "$pid" > "${PORT_FORWARD_PID_DIR}/${name}.pid"
+    echo "$pid" >"${PORT_FORWARD_PID_DIR}/${name}.pid"
 }
 
 kill_all_port_forwards() {
@@ -91,7 +91,10 @@ kill_all_port_forwards() {
 
 terminal_title() { echo -ne "\033]0;$1\007"; }
 br() { echo ""; }
-title() { echo -e "${TEXT_BOLD}${TEXT_ORANGE}$1${COLOR_TEXT}"; br; }
+title() {
+    echo -e "${TEXT_BOLD}${TEXT_ORANGE}$1${COLOR_TEXT}"
+    br
+}
 t_orange() { echo -e "${TEXT_ORANGE}$1${COLOR_TEXT}"; }
 t_bold() { echo -e "${TEXT_BOLD}$1${COLOR_TEXT}"; }
 welcome() {
@@ -164,15 +167,15 @@ open_port_forward() {
 
     if [[ "$namespace" == "production" ]]; then
         case "$service" in
-            mysql-egg)
-                service_k8s="mysql"
-                ;;
-            redis)
-                service_k8s="redis-master"
-                ;;
-            *)
-                service_k8s="$service"
-                ;;
+        mysql-egg)
+            service_k8s="mysql"
+            ;;
+        redis)
+            service_k8s="redis-master"
+            ;;
+        *)
+            service_k8s="$service"
+            ;;
         esac
     fi
 
@@ -236,10 +239,8 @@ print_port_forward_summary() {
     echo -e "${LINE}"
     echo -e "🔌 ${total_success} services running, ${total_failed} services failed"
     br
-    echo -ne "\a"  # <-- 🎵 beep aquí!
+    echo -ne "\a" # <-- 🎵 beep aquí!
 }
-
-
 
 open_all_namespaces() {
     prepare_pid_dir
@@ -248,30 +249,30 @@ open_all_namespaces() {
 
     # Recorrer cada namespace y su offset
     for ns_offset in "${NAMESPACE_PORT_OFFSETS[@]}"; do
-        IFS=':' read -r namespace offset <<< "$ns_offset"
+        IFS=':' read -r namespace offset <<<"$ns_offset"
 
         case "$namespace" in
-            development)
-                echo "🔑 Setting credentials for development (GKE)..."
-                gcloud container clusters get-credentials egg-gke-develop --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
-                ;;
-            demo)
-                echo "🔑 Setting credentials for demo (GKE)..."
-                gcloud container clusters get-credentials egg-gke-demo --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
-                ;;
-            production)
-                echo "🔑 Setting credentials for production (AWS EKS)..."
-                aws eks update-kubeconfig --name egg-eks-pro --region us-east-1 >/dev/null 2>&1
-                ;;
-            *)
-                echo "❌ Unknown namespace $namespace"
-                continue
-                ;;
+        development)
+            echo "🔑 Setting credentials for development (GKE)..."
+            gcloud container clusters get-credentials egg-gke-develop --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
+            ;;
+        demo)
+            echo "🔑 Setting credentials for demo (GKE)..."
+            gcloud container clusters get-credentials egg-gke-demo --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
+            ;;
+        production)
+            echo "🔑 Setting credentials for production (AWS EKS)..."
+            aws eks update-kubeconfig --name egg-eks-pro --region us-east-1 >/dev/null 2>&1
+            ;;
+        *)
+            echo "❌ Unknown namespace $namespace"
+            continue
+            ;;
         esac
 
         # Una vez conectado, abrir los services de este namespace
         for entry in "${SERVICES[@]}"; do
-            IFS='|' read -r service_short remote_port service_k8s <<< "$entry"
+            IFS='|' read -r service_short remote_port service_k8s <<<"$entry"
             local_port=$((remote_port + offset))
             open_port_forward "${service_short}-${namespace}" "$local_port" "$remote_port" "$service_k8s" "$namespace" || true
         done
@@ -338,7 +339,7 @@ execute_option() {
     auth) start_api "egg-auth" "npm run dev" ;;
     aw) start_api "egg-widget-api" "NODE_ENV=development npm run start" ;;
     eco) start_api "api-ecosystem" "npm run start:dev" ;;
-    egg) start_api "egg-api" "npx ts-node-dev --respawn src/index.ts" ;;
+    api) start_api "egg-api" "npx ts-node-dev --respawn src/index.ts" ;;
     ai) start_frontend "api-ai" "npm run dev" ;;
     sdk) start_frontend "egg-video-sdk" "npm run start" ;;
     sign) start_frontend "egg-api-signup" "npm run dev" ;;
@@ -347,7 +348,11 @@ execute_option() {
     mongo) open_prisma_studio "prisma/mongo-client/schema.prisma" ;;
     sql) open_prisma_studio "prisma/mysql-client/schema.prisma" ;;
     pf) open_all_namespaces ;;
-    pc) title "Closing all port-forwarding..." ; kill_all_port_forwards ; br ;;
+    pc)
+        title "Closing all port-forwarding..."
+        kill_all_port_forwards
+        br
+        ;;
     log)
         echo -e "${COLOR_TITLE}Available services:${TEXT_NORMAL} api-signup, api-egg, api-websocket, api-hca, mongo, mysql, mysql-egg, redis-zapp-master"
         read -p "Enter service name [api-signup]: " service
@@ -372,7 +377,7 @@ show_options() {
     echo -e "🔹 auth        - egg-auth                  🔹 adm        - egg-adm"
     echo -e "🔹 aw          - widget-api                🔹 admin      - egg-admin"
     echo -e "🔹 eco         - api-ecosystem             🔹 bko        - egg-backoffice"
-    echo -e "🔹 egg         - egg-api                   🔹 lxp        - egg-lxp"
+    echo -e "🔹 api         - egg-api                   🔹 lxp        - egg-lxp"
     echo -e "🔹 ai          - api-ai                    🔹 meet       - egg-meet"
     echo -e "🔹 sdk         - egg-video-sdk"
     echo -e "🔹 sign        - api-signup"
