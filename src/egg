@@ -5,7 +5,7 @@ IFS=$'\n\t'
 ########################################
 # CONFIGURATION AND CONSTANTS
 ########################################
-readonly VERSION="20250430"
+readonly VERSION="20250529"
 readonly CONFIG_FILE="$HOME/egg.env"
 
 # name|remote_port|k8s_service
@@ -432,7 +432,8 @@ update_egg() {
 start_frontend() {
     local project="$1"
     local cmd="$2"
-    terminal_title "$project"
+    local terminal_title="${3:-$project}"
+    terminal_title "$terminal_title"
     cd "$REPOSITORIES_PATH/$project" && eval "$cmd"
 }
 
@@ -479,13 +480,13 @@ execute_option() {
     admin) start_frontend "egg-admin" "NODE_OPTIONS=--openssl-legacy-provider npm start" ;;
     bko) start_frontend "egg-backoffice" "pnpm run start" ;;
     lxp) start_frontend "egg-lxp" "npm run start" ;;
-    meet) start_frontend "egg-meet" "npm run dev" ;;
     auth) start_api "egg-auth" "npm run dev" ;;
     aw) start_api "egg-widget-api" "NODE_ENV=development npm run start" ;;
     eco) start_api "api-ecosystem" "npm run start:dev" ;;
     api) start_api "egg-api" "npx ts-node-dev --respawn src/index.ts" ;;
     ai) start_frontend "api-ai" "npm run dev" ;;
-    sdk) start_frontend "egg-video-sdk" "npm run start" ;;
+    sdk) start_frontend "egg-video-sdk" "node --run start" "SDK" ;;
+    meet) start_frontend "egg-video-app" "node --run dev" "Meet" ;;
     sign) start_frontend "egg-api-signup" "npm run dev" ;;
     users) start_api "api-user" "npm run start:dev" ;;
     ws) start_api "egg-api-websocket" "npm run dev" ;;
