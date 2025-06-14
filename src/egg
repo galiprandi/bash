@@ -120,29 +120,30 @@ setup_config() {
     local updated=0
 
     if [[ -z "${GIT_USER_NAME:-}" ]]; then
-        GIT_USER_NAME=$(read_input "Enter your name" "$(git config --get user.name || echo "")")
+        GIT_USER_NAME=$(git config --get user.name 2>/dev/null || echo "egg-user")
         updated=1
     fi
 
     if [[ -z "${GIT_USER_EMAIL:-}" ]]; then
-        GIT_USER_EMAIL=$(read_input "Enter your email" "$(git config --get user.email || echo "")")
+        GIT_USER_EMAIL=$(git config --get user.email 2>/dev/null || echo "egg@example.com")
         updated=1
     fi
 
     if [[ -z "${REPOSITORIES_PATH:-}" ]]; then
-        REPOSITORIES_PATH=$(read_input "Enter your repositories path" "$HOME/Github")
+        REPOSITORIES_PATH="$HOME/Github"
         updated=1
     fi
 
     if [[ $updated -eq 1 || ! -f "$CONFIG_FILE" ]]; then
-        echo ""
-        echo "Saving configuration..."
+        echo "Creating configuration file with default values..."
         cat <<EOF >"$CONFIG_FILE"
 GIT_USER_NAME="$GIT_USER_NAME"
 GIT_USER_EMAIL="$GIT_USER_EMAIL"
 REPOSITORIES_PATH="$REPOSITORIES_PATH"
 EOF
         echo "Configuration saved: $CONFIG_FILE"
+        echo "You can edit this file later if needed."
+        echo ""
     fi
 }
 
