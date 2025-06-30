@@ -1,0 +1,114 @@
+#!/bin/bash
+
+set -e
+
+PORT_FORWARD_PID_DIR="/tmp/egg-ports"
+mkdir -p "$PORT_FORWARD_PID_DIR"
+
+# Servicios en formato: name|remote_port|k8s_service
+readonly SERVICES=(
+    "mongo|27017|mongo"
+    "mysql|3306|mysql"
+    "mysql-egg|3306|mysql-egg"
+    "api-hca|5000|api-hca"
+    "api-websocket|6060|api-websocket"
+    "redis|6379|redis-master"
+)
+
+# Namespaces y offsets
+readonly NAMESPACE_PORT_OFFSETS=(
+    "development:0"
+    "demo:20"
+    "production:30"
+)
+
+# Guardar PID
+save_pid() {
+    local name="$1"
+    local pid="$2"
+    echo "$pid" > "${PORT_FORWARD_PID_DIR}/${name}.pid"
+}
+
+# Verificar si un puerto está ocupado
+is_port_in_use() {
+    local port="$1"
+    lsof -iTCP:"$port" -sTCP:LISTEN -n -P >/dev/null 2>&1
+}
+
+# Ejecutar port-forward para un servicio
+open_port_forward() {
+    local name="$1"
+    local local_port="$2"
+    local remote_port="$3"
+    local service="$4"
+    local namespace="$5"
+
+    local service_k8s="$service"
+
+    if [[ "$namespace" == "production" ]]; then
+        case "$service" in
+            mysql-egg) service_k8s="mysql" ;;
+            redis) service_k8s="redis-master" ;;
+            *) service_k8s="$service" ;;
+        esac
+    fi
+
+    if is_port_in_use "$local_port"; then
+        echo "🔌 $name: http://localhost:$local_port (Already running)"
+        return
+    fi
+
+    if ! kubectl get service "$service_k8s" -n "$namespace" >/dev/null 2>&1; then
+        echo "❌ $name: Service '$service_k8s' not found in namespace '$namespace'"
+        return
+    fi
+
+    (kubectl port-forward service/"$service_k8s" "$local_port:$remote_port" -n "$namespace" >/dev/null 2>&1) &
+    local pid=$!
+    sleep 2
+
+    if kill -0 "$pid" 2>/dev/null; then
+        save_pid "$name" "$pid"
+        echo "✅ $name: Port-forward running (PID $pid) on http://localhost:$local_port"
+    else
+        kill "$pid" 2>/dev/null || true
+        rm -f "${PORT_FORWARD_PID_DIR}/${name}.pid"
+        echo "❌ $name: Port-forward failed"
+    fi
+}
+
+# Conectar a cluster y hacer forward por entorno
+open_all_namespaces() {
+    echo "🔌 Starting port-forwards for all namespaces..."
+
+    for ns_offset in "${NAMESPACE_PORT_OFFSETS[@]}"; do
+        IFS=':' read -r namespace offset <<< "$ns_offset"
+
+        case "$namespace" in
+            development)
+                echo "🔑 Getting credentials for development..."
+                gcloud container clusters get-credentials egg-gke-develop --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
+                ;;
+            demo)
+                echo "🔑 Getting credentials for demo..."
+                gcloud container clusters get-credentials egg-gke-demo --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
+                ;;
+            production)
+                echo "🔑 Getting credentials for production..."
+                aws eks update-kubeconfig --name egg-eks-pro --region us-east-1 >/dev/null 2>&1
+                ;;
+            *)
+                echo "❌ Unknown namespace: $namespace"
+                continue
+                ;;
+        esac
+
+        for entry in "${SERVICES[@]}"; do
+            IFS='|' read -r name remote_port k8s_service <<< "$entry"
+            local_port=$((remote_port + offset))
+            open_port_forward "${name}-${namespace}" "$local_port" "$remote_port" "$k8s_service" "$namespace"
+        done
+    done
+}
+
+open_all_namespaces
