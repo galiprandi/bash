@@ -45,6 +45,24 @@ check_config() {
 #   - org: galiprandi
 #     repo: bash
 #     branch: main
+#     protection:
+#       # Enforce rules for admins too
+#       enforce_admins: true
+#       # Allow/disallow force pushes and deletions on protected branch
+#       allow_force_pushes: false
+#       allow_deletions: false
+#       # Required status checks (set CI contexts if needed)
+#       required_status_checks:
+#         strict: true
+#         contexts: []
+#       # Pull request review requirements
+#       required_pull_request_reviews:
+#         required_approving_review_count: 3
+#         require_code_owner_reviews: false
+#         dismiss_stale_reviews: false
+#         require_last_push_approval: false
+#       # Restrictions on who can push (null by default; configure rulesets if you need granular control)
+#       restrictions: null
 EOF
     exit 1
   }
@@ -88,14 +106,48 @@ protect() {
   printf "[LOCK] Protecting %s@%s... " "$full" "$branch"
   local out
   local payload
+  # Derive org/repo for per-entry lookup
+  local org repo
+  org=${full%%/*}
+  repo=${full##*/}
+
+  # Defaults
+  local def_enforce_admins=true
+  local def_allow_force_pushes=false
+  local def_allow_deletions=false
+  local def_strict=true
+  local def_contexts='[]'
+  local def_rpr_count=3
+  local def_require_co=false
+  local def_dismiss_stale=false
+  local def_require_last_push_approval=false
+
+  # Resolve values from YAML (fall back to defaults)
+  local qprefix=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\") | .protection"
+  local enforce_admins=$(yq eval "$qprefix.enforce_admins // $def_enforce_admins" "$CONFIG")
+  local allow_force_pushes=$(yq eval "$qprefix.allow_force_pushes // $def_allow_force_pushes" "$CONFIG")
+  local allow_deletions=$(yq eval "$qprefix.allow_deletions // $def_allow_deletions" "$CONFIG")
+  local strict=$(yq eval "$qprefix.required_status_checks.strict // $def_strict" "$CONFIG")
+  local contexts=$(yq -o=json eval "$qprefix.required_status_checks.contexts // $def_contexts" "$CONFIG")
+  local required_approving_review_count=$(yq eval "$qprefix.required_pull_request_reviews.required_approving_review_count // $def_rpr_count" "$CONFIG")
+  local require_code_owner_reviews=$(yq eval "$qprefix.required_pull_request_reviews.require_code_owner_reviews // $def_require_co" "$CONFIG")
+  local dismiss_stale_reviews=$(yq eval "$qprefix.required_pull_request_reviews.dismiss_stale_reviews // $def_dismiss_stale" "$CONFIG")
+  local require_last_push_approval=$(yq eval "$qprefix.required_pull_request_reviews.require_last_push_approval // $def_require_last_push_approval" "$CONFIG")
+
+  # Build JSON payload (always include objects with resolved values)
   payload=$(cat <<JSON
 {
-  "required_pull_request_reviews": null,
-  "required_status_checks": { "strict": true, "contexts": [] },
-  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": $required_approving_review_count,
+    "require_code_owner_reviews": $require_code_owner_reviews,
+    "dismiss_stale_reviews": $dismiss_stale_reviews,
+    "require_last_push_approval": $require_last_push_approval
+  },
+  "required_status_checks": { "strict": $strict, "contexts": $contexts },
+  "enforce_admins": $enforce_admins,
   "restrictions": null,
-  "allow_force_pushes": false,
-  "allow_deletions": false
+  "allow_force_pushes": $allow_force_pushes,
+  "allow_deletions": $allow_deletions
 }
 JSON
 )
