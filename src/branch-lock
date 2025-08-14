@@ -4,7 +4,7 @@
 # Usage: ./branch-lock [lock|unlock]
 # Dependencies: gh (GitHub CLI), yq
 # Configuration: branch-lock.yaml
-# Author: Germán Aliprandi - https://github.com/galiprandi
+# Author: Germán Aliprandi - https://github.com/galiprandi  
 # License: MIT
 
 set -euo pipefail
@@ -71,7 +71,7 @@ EOF
 check_deps() {
   for cmd in gh yq; do
     if ! command -v "$cmd" &> /dev/null; then
-      printf "${Red}[ERROR] %s is not installed. Install: https://cli.github.com | https://github.com/mikefarah/yq${NC}\n" "$cmd"
+      printf "${Red}[ERROR] %s is not installed. Install: https://cli.github.com   | https://github.com/mikefarah/yq  ${NC}\n" "$cmd"
       exit 1
     fi
   done
@@ -181,20 +181,39 @@ JSON
 
 # Main
 main() {
+  # Default config
+  CONFIG="branch-lock.yaml"
+
   # Parse flags and action
   ACTION=""
-  for arg in "$@"; do
+  i=1
+  while [[ $i -le $# ]]; do
+    arg="${!i}"
     case "$arg" in
       --yes|-y) YES=1 ;;
       --quiet|-q) QUIET=1 ;;
+      --config)
+        i=$((i + 1))
+        CONFIG="${!i}"
+        ;;
+      --config=*)
+        CONFIG="${arg#--config=}"
+        ;;
       lock|unlock) ACTION="$arg" ;;
+      *)
+        printf "Unknown argument: %s\n" "$arg" >&2
+        exit 1
+        ;;
     esac
+    i=$((i + 1))
   done
+
   if [[ -z "$ACTION" ]]; then
     printf "Usage: %s [options] <lock|unlock>\n" "$(basename "$0")"
     printf "Options:\n"
     printf "  --yes, -y       Skip confirmation\n"
     printf "  --quiet, -q     Minimal output (hide header and action/targets)\n"
+    printf "  --config <file> Use custom config file\n"
     exit 1
   fi
 
@@ -234,7 +253,7 @@ main() {
     log_info "Check permissions or repository/branch names"
   fi
 
-  exit 0
+  exit $((error > 0))
 }
 
 main "$@"
