@@ -233,6 +233,8 @@ main() {
     log_err "Completed: ${Bold}${success}${NC} success, ${Bold}${error}${NC} error(s)"
     log_info "Check permissions or repository/branch names"
   fi
+
+  exit $((error > 0))
 }
 
 main "$@"
