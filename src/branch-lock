@@ -120,42 +120,38 @@ confirm() {
   }
 }
 
-# Apply protection
-protect() {
+# Apply or update protection (single function for lock/unlock)
+apply_protection() {
+  local action="$1"; shift
   local full="$1" branch="$2"
   local _pfx=""
   [[ -n "${CURRENT_IDX:-}" && -n "${TOTAL_COUNT:-}" ]] && _pfx="[${CURRENT_IDX}/${TOTAL_COUNT}] "
-  log_step "${_pfx}${IC_LOCK} Protecting ${Bold}${full}@${branch}${NC}"
-  local out
-  local payload
+
   # Derive org/repo for per-entry lookup
   local org repo
   org=${full%%/*}
   repo=${full##*/}
-  
-  # Determine required approvals from YAML (prefer per-repo lock override, fallback to global)
-  local required_approving_review_count
 
-  # Read lock settings: prefer per-repo, fallback to global .lock.required_approvals (default 6)
-  local qrepo=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\")"
-  local repo_lock_approvals=$(yq eval "$qrepo.lock.required_approvals" "$CONFIG")
-  if [[ "$repo_lock_approvals" != "null" ]]; then
-    required_approving_review_count="$repo_lock_approvals"
+  # Resolve approvals based on action
+  local approvals qrepo payload out t0 dt
+  qrepo=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\")"
+  if [[ "$action" == "lock" ]]; then
+    log_step "${_pfx}${IC_LOCK} Protecting ${Bold}${full}@${branch}${NC}"
+    local v=$(yq eval "$qrepo.lock.required_approvals" "$CONFIG")
+    if [[ "$v" != "null" ]]; then approvals="$v"; else approvals=$(yq eval ".lock.required_approvals // 6" "$CONFIG"); fi
   else
-    required_approving_review_count=$(yq eval ".lock.required_approvals // 6" "$CONFIG")
+    log_step "${_pfx}${IC_UNLOCK} Updating protection for ${Bold}${full}@${branch}${NC}"
+    local v=$(yq eval "$qrepo.unlock.required_approvals" "$CONFIG")
+    if [[ "$v" != "null" ]]; then approvals="$v"; else approvals=$(yq eval ".unlock.required_approvals // 0" "$CONFIG"); fi
   fi
-  # Cap to GitHub limits
-  if [[ "$required_approving_review_count" -gt 6 ]]; then
-    required_approving_review_count=6
-  fi
-  if [[ "$required_approving_review_count" -lt 0 ]]; then
-    required_approving_review_count=0
-  fi
-  # Build JSON payload: ONLY require N approvals; disable/omit other rules
+  # Cap approvals to GitHub limit 0..6
+  if [[ "$approvals" -gt 6 ]]; then approvals=6; fi
+  if [[ "$approvals" -lt 0 ]]; then approvals=0; fi
+
   payload=$(cat <<JSON
 {
   "required_pull_request_reviews": {
-    "required_approving_review_count": $required_approving_review_count
+    "required_approving_review_count": $approvals
   },
   "required_status_checks": null,
   "enforce_admins": false,
@@ -163,63 +159,22 @@ protect() {
 }
 JSON
 )
-  local t0=$SECONDS
-  if out=$(gh api "repos/$full/branches/$branch/protection" \
-    --method PUT \
-    -H "Accept: application/vnd.github+json" \
-    --input - 2>&1 <<< "$payload"); then
-    local dt=$((SECONDS - t0))
-    log_ok "Locked with ${Bold}${required_approving_review_count}${NC} reviewer(s) ${Dim}(${dt}s)${NC}"
+  t0=$SECONDS
+  if out=$(gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - 2>&1 <<< "$payload"); then
+    dt=$((SECONDS - t0))
+    if [[ "$action" == "lock" ]]; then
+      log_ok "Locked with ${Bold}${approvals}${NC} reviewer(s) ${Dim}(${dt}s)${NC}"
+    else
+      log_ok "Set reviewers to ${Bold}${approvals}${NC} ${Dim}(${dt}s)${NC}"
+    fi
     return 0
   else
-    log_err "Failed to lock"
+    if [[ "$action" == "lock" ]]; then
+      log_err "Failed to lock"
+    else
+      log_err "Failed to update reviewers on unlock"
+    fi
     log_dim "$out"
-    return 1
-  fi
-}
-
-# Remove protection
-unprotect() {
-  local full="$1" branch="$2"
-  local _pfx=""
-  [[ -n "${CURRENT_IDX:-}" && -n "${TOTAL_COUNT:-}" ]] && _pfx="[${CURRENT_IDX}/${TOTAL_COUNT}] "
-  log_step "${_pfx}${IC_UNLOCK} Updating protection for ${Bold}${full}@${branch}${NC}"
-  # Change the number of required approvals on unlock
-  local org repo
-  org=${full%%/*}
-  repo=${full##*/}
-  local qrepo=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\")"
-  local repo_unlock_approvals=$(yq eval "$qrepo.unlock.required_approvals" "$CONFIG")
-  local unlock_approvals
-  if [[ "$repo_unlock_approvals" != "null" ]]; then
-    unlock_approvals="$repo_unlock_approvals"
-  else
-    unlock_approvals=$(yq eval ".unlock.required_approvals // 0" "$CONFIG")
-  fi
-  # Cap approvals to GitHub limit
-  if [[ "$unlock_approvals" -gt 6 ]]; then unlock_approvals=6; fi
-  if [[ "$unlock_approvals" -lt 0 ]]; then unlock_approvals=0; fi
-
-  local payload
-  payload=$(cat <<JSON
-{
-  "required_pull_request_reviews": {
-    "required_approving_review_count": $unlock_approvals
-  },
-  "required_status_checks": null,
-  "enforce_admins": false,
-  "restrictions": null
-}
-JSON
-)
-  local t0=$SECONDS
-  if gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - <<< "$payload" >/dev/null 2>&1; then
-    local dt=$((SECONDS - t0))
-    log_ok "Set reviewers to ${Bold}${unlock_approvals}${NC} ${Dim}(${dt}s)${NC}"
-    return 0
-  else
-    log_err "Failed to update reviewers on unlock"
-    gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - <<< "$payload" 2>&1 | sed 's/^/  /' | sed $'s/^/\e[2m/' | sed $'s/$/\e[0m/'
     return 1
   fi
 }
@@ -264,10 +219,10 @@ main() {
       continue
     fi
 
-    if [[ "$ACTION" == "lock" ]]; then
-      if protect "$full_repo" "$target_branch"; then ((success++)); else ((error++)); fi
+    if apply_protection "$ACTION" "$full_repo" "$target_branch"; then
+      ((success++))
     else
-      if unprotect "$full_repo" "$target_branch"; then ((success++)); else ((error++)); fi
+      ((error++))
     fi
   done
 
