@@ -3,6 +3,9 @@
 # branch-lock - Securely protect or unprotect branches across multiple GitHub repositories
 # Usage: ./branch-lock [lock|unlock]
 # Dependencies: gh (GitHub CLI), yq
+# Configuration: branch-lock.yaml
+# Author: Germán Aliprandi - https://github.com/galiprandi
+# License: MIT
 
 set -euo pipefail
 
@@ -15,6 +18,32 @@ NC='\033[0m'
 
 # Config
 CONFIG="branch-lock.yaml"
+
+# Config check
+check_config() {
+  [[ -f "$CONFIG" ]] || {
+    printf "${Red}[ERROR] Configuration file '$CONFIG' not found${NC}\n"
+    
+    # Create default config
+    cat <<EOF > "$CONFIG"
+# lock:
+#   required_approvals: 6
+# unlock:
+#   required_approvals: 1
+#
+# repositories:
+#   - org: galiprandi
+#     repo: bash
+#     branch: main
+#     # Optional per-repository overrides (if omitted, global lock/unlock settings are used)
+#     # lock:
+#     #   required_approvals: 6
+#     # unlock:
+#     #   required_approvals: 1
+EOF
+    exit 1
+  }
+}
 
 # Dependencies check
 check_deps() {
@@ -32,40 +61,6 @@ check_auth() {
     printf "${Red}[ERROR] Not authenticated with GitHub CLI. Run 'gh auth login'${NC}\n"
     exit 1
   fi
-}
-
-# Config check
-check_config() {
-  [[ -f "$CONFIG" ]] || {
-    printf "${Red}[ERROR] Configuration file '$CONFIG' not found${NC}\n"
-    
-    # Create default config
-    cat <<EOF > "$CONFIG"
-# repositories:
-#   - org: galiprandi
-#     repo: bash
-#     branch: main
-#     protection:
-#       # Enforce rules for admins too
-#       enforce_admins: true
-#       # Allow/disallow force pushes and deletions on protected branch
-#       allow_force_pushes: false
-#       allow_deletions: false
-#       # Required status checks (set CI contexts if needed)
-#       required_status_checks:
-#         strict: true
-#         contexts: []
-#       # Pull request review requirements
-#       required_pull_request_reviews:
-#         required_approving_review_count: 3
-#         require_code_owner_reviews: false
-#         dismiss_stale_reviews: false
-#         require_last_push_approval: false
-#       # Restrictions on who can push (null by default; configure rulesets if you need granular control)
-#       restrictions: null
-EOF
-    exit 1
-  }
 }
 
 # Load repos from config
@@ -103,51 +98,41 @@ confirm() {
 # Apply protection
 protect() {
   local full="$1" branch="$2"
-  printf "[LOCK] Protecting %s@%s... " "$full" "$branch"
+  printf "🔒 Protecting %s@%s... " "$full" "$branch"
   local out
   local payload
   # Derive org/repo for per-entry lookup
   local org repo
   org=${full%%/*}
   repo=${full##*/}
+  
+  # Determine required approvals from YAML (prefer per-repo lock override, fallback to global)
+  local required_approving_review_count
 
-  # Defaults
-  local def_enforce_admins=true
-  local def_allow_force_pushes=false
-  local def_allow_deletions=false
-  local def_strict=true
-  local def_contexts='[]'
-  local def_rpr_count=10
-  local def_require_co=false
-  local def_dismiss_stale=false
-  local def_require_last_push_approval=false
-
-  # Resolve values from YAML (fall back to defaults)
-  local qprefix=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\") | .protection"
-  local enforce_admins=$(yq eval "$qprefix.enforce_admins // $def_enforce_admins" "$CONFIG")
-  local allow_force_pushes=$(yq eval "$qprefix.allow_force_pushes // $def_allow_force_pushes" "$CONFIG")
-  local allow_deletions=$(yq eval "$qprefix.allow_deletions // $def_allow_deletions" "$CONFIG")
-  local strict=$(yq eval "$qprefix.required_status_checks.strict // $def_strict" "$CONFIG")
-  local contexts=$(yq -o=json eval "$qprefix.required_status_checks.contexts // $def_contexts" "$CONFIG")
-  local required_approving_review_count=$(yq eval "$qprefix.required_pull_request_reviews.required_approving_review_count // $def_rpr_count" "$CONFIG")
-  local require_code_owner_reviews=$(yq eval "$qprefix.required_pull_request_reviews.require_code_owner_reviews // $def_require_co" "$CONFIG")
-  local dismiss_stale_reviews=$(yq eval "$qprefix.required_pull_request_reviews.dismiss_stale_reviews // $def_dismiss_stale" "$CONFIG")
-  local require_last_push_approval=$(yq eval "$qprefix.required_pull_request_reviews.require_last_push_approval // $def_require_last_push_approval" "$CONFIG")
-
-  # Build JSON payload (always include objects with resolved values)
+  # Read lock settings: prefer per-repo, fallback to global .lock.required_approvals (default 6)
+  local qrepo=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\")"
+  local repo_lock_approvals=$(yq eval "$qrepo.lock.required_approvals" "$CONFIG")
+  if [[ "$repo_lock_approvals" != "null" ]]; then
+    required_approving_review_count="$repo_lock_approvals"
+  else
+    required_approving_review_count=$(yq eval ".lock.required_approvals // 6" "$CONFIG")
+  fi
+  # Cap to GitHub limits
+  if [[ "$required_approving_review_count" -gt 6 ]]; then
+    required_approving_review_count=6
+  fi
+  if [[ "$required_approving_review_count" -lt 0 ]]; then
+    required_approving_review_count=0
+  fi
+  # Build JSON payload: ONLY require N approvals; disable/omit other rules
   payload=$(cat <<JSON
 {
   "required_pull_request_reviews": {
-    "required_approving_review_count": $required_approving_review_count,
-    "require_code_owner_reviews": $require_code_owner_reviews,
-    "dismiss_stale_reviews": $dismiss_stale_reviews,
-    "require_last_push_approval": $require_last_push_approval
+    "required_approving_review_count": $required_approving_review_count
   },
-  "required_status_checks": { "strict": $strict, "contexts": $contexts },
-  "enforce_admins": $enforce_admins,
-  "restrictions": null,
-  "allow_force_pushes": $allow_force_pushes,
-  "allow_deletions": $allow_deletions
+  "required_status_checks": null,
+  "enforce_admins": false,
+  "restrictions": null
 }
 JSON
 )
@@ -155,7 +140,7 @@ JSON
     --method PUT \
     -H "Accept: application/vnd.github+json" \
     --input - 2>&1 <<< "$payload"); then
-    printf "${Green}✔ PROTECTED${NC}\n"
+    printf "${Red}✔ PROTECTED${NC}\n"
     return 0
   else
     printf "${Red}✘ FAILED${NC}\n"
@@ -167,17 +152,41 @@ JSON
 # Remove protection
 unprotect() {
   local full="$1" branch="$2"
-  printf "[UNLOCK] Unprotecting %s@%s... " "$full" "$branch"
-  if gh api "repos/$full/branches/$branch/protection" --method DELETE --silent 2>/dev/null; then
+  printf "🔓 Unprotecting %s@%s... " "$full" "$branch"
+  # Change the number of required approvals on unlock
+  local org repo
+  org=${full%%/*}
+  repo=${full##*/}
+  local qrepo=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\")"
+  local repo_unlock_approvals=$(yq eval "$qrepo.unlock.required_approvals" "$CONFIG")
+  local unlock_approvals
+  if [[ "$repo_unlock_approvals" != "null" ]]; then
+    unlock_approvals="$repo_unlock_approvals"
+  else
+    unlock_approvals=$(yq eval ".unlock.required_approvals // 0" "$CONFIG")
+  fi
+  # Cap approvals to GitHub limit
+  if [[ "$unlock_approvals" -gt 6 ]]; then unlock_approvals=6; fi
+  if [[ "$unlock_approvals" -lt 0 ]]; then unlock_approvals=0; fi
+
+  local payload
+  payload=$(cat <<JSON
+{
+  "required_pull_request_reviews": {
+    "required_approving_review_count": $unlock_approvals
+  },
+  "required_status_checks": null,
+  "enforce_admins": false,
+  "restrictions": null
+}
+JSON
+)
+  if gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - <<< "$payload" >/dev/null 2>&1; then
     printf "${Green}🔓 UNPROTECTED${NC}\n"
     return 0
-  elif ! gh api "repos/$full/branches/$branch/protection" --silent &> /dev/null; then
-    printf "${Green}⏩ Already unprotected${NC}\n"
-    return 0
   else
-    printf "${Red}✘ FAILED${NC}\n"
-    # show error on failure
-    gh api "repos/$full/branches/$branch/protection" --method DELETE 2>&1 | sed 's/^/  /'
+    printf "${Red}✘ FAILED applying unlock approvals${NC}\n"
+    gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - <<< "$payload" 2>&1 | sed 's/^/  /'
     return 1
   fi
 }
@@ -197,8 +206,8 @@ main() {
       ;;
     *)
       printf "Usage: %s [lock|unlock]\n" "$(basename "$0")"
-      printf "  lock   %s\n" "Enable branch protection (prevent direct pushes)"
-      printf "  unlock %s\n" "Disable branch protection"
+      printf "  lock   %s\n" "Require N PR approvals (minimal protection)"
+      printf "  unlock %s\n" "Set approvals on unlock (PUT minimal protection)"
       exit 1
       ;;
   esac
@@ -217,9 +226,17 @@ main() {
     fi
 
     if [[ "$ACTION" == "lock" ]]; then
-      protect "$full_repo" "$target_branch" && ((success++)) || ((error++))
+      if protect "$full_repo" "$target_branch"; then
+        ((success++))
+      else
+        ((error++))
+      fi
     else
-      unprotect "$full_repo" "$target_branch" && ((success++)) || ((error++))
+      if unprotect "$full_repo" "$target_branch"; then
+        ((success++))
+      else
+        ((error++))
+      fi
     fi
   done
 
