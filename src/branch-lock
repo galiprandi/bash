@@ -117,7 +117,7 @@ protect() {
   local def_allow_deletions=false
   local def_strict=true
   local def_contexts='[]'
-  local def_rpr_count=3
+  local def_rpr_count=10
   local def_require_co=false
   local def_dismiss_stale=false
   local def_require_last_push_approval=false
