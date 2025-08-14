@@ -14,10 +14,32 @@ Cyan='\033[0;36m'
 Green='\033[0;32m'
 Yellow='\033[1;33m'
 Red='\033[0;31m'
+Bold='\033[1m'
+Dim='\033[2m'
 NC='\033[0m'
+
+# Icons
+IC_INFO='ℹ'
+IC_OK='✔'
+IC_ERR='✘'
+IC_STEP='▶'
+IC_LOCK='🔒'
+IC_UNLOCK='🔓'
+IC_STAR='★'
+
+# Log helpers
+log_step() { printf "%b %b\n" "${Cyan}${IC_STEP}${NC}" "$1"; }
+log_ok()   { printf "%b %b\n" "${Green}${IC_OK}${NC}" "$1"; }
+log_err()  { printf "%b %b\n" "${Red}${IC_ERR}${NC}" "$1"; }
+log_info() { printf "%b %b\n" "${Cyan}${IC_INFO}${NC}" "$1"; }
+log_dim()  { printf "%b\n"   "${Dim}$1${NC}"; }
 
 # Config
 CONFIG="branch-lock.yaml"
+
+ACTION=""
+YES=0
+QUIET=0
 
 # Config check
 check_config() {
@@ -85,10 +107,13 @@ load_repos() {
 # Confirm action
 confirm() {
   local action=$1
-  printf "${Cyan}Action:    %s${NC}\n" "$action"
-  printf "${Cyan}Targets:   %d repositories${NC}\n" "${#REPOS[@]}"
-  printf "\n"
-  read -rp "Proceed? (yes/N): " CONFIRM
+  if [[ $QUIET -ne 1 ]]; then
+    log_info "Action    ${Bold}$action${NC}"
+    log_info "Targets   ${Bold}${#REPOS[@]}${NC} repos"
+    printf "\n"
+  fi
+  [[ $YES -eq 1 ]] && return 0
+  read -rp $'▶ Proceed? (yes/N): ' CONFIRM
   [[ "$CONFIRM" == "yes" ]] || {
     printf "${Red}[ABORT] Operation cancelled${NC}\n"
     exit 0
@@ -98,7 +123,9 @@ confirm() {
 # Apply protection
 protect() {
   local full="$1" branch="$2"
-  printf "🔒 Protecting %s@%s... " "$full" "$branch"
+  local _pfx=""
+  [[ -n "${CURRENT_IDX:-}" && -n "${TOTAL_COUNT:-}" ]] && _pfx="[${CURRENT_IDX}/${TOTAL_COUNT}] "
+  log_step "${_pfx}${IC_LOCK} Protecting ${Bold}${full}@${branch}${NC}"
   local out
   local payload
   # Derive org/repo for per-entry lookup
@@ -136,15 +163,17 @@ protect() {
 }
 JSON
 )
+  local t0=$SECONDS
   if out=$(gh api "repos/$full/branches/$branch/protection" \
     --method PUT \
     -H "Accept: application/vnd.github+json" \
     --input - 2>&1 <<< "$payload"); then
-    printf "${Red}✔ PROTECTED${NC}\n"
+    local dt=$((SECONDS - t0))
+    log_ok "Locked with ${Bold}${required_approving_review_count}${NC} reviewer(s) ${Dim}(${dt}s)${NC}"
     return 0
   else
-    printf "${Red}✘ FAILED${NC}\n"
-    printf "${Yellow}%s${NC}\n" "$out"
+    log_err "Failed to lock"
+    log_dim "$out"
     return 1
   fi
 }
@@ -152,7 +181,9 @@ JSON
 # Remove protection
 unprotect() {
   local full="$1" branch="$2"
-  printf "🔓 Unprotecting %s@%s... " "$full" "$branch"
+  local _pfx=""
+  [[ -n "${CURRENT_IDX:-}" && -n "${TOTAL_COUNT:-}" ]] && _pfx="[${CURRENT_IDX}/${TOTAL_COUNT}] "
+  log_step "${_pfx}${IC_UNLOCK} Updating protection for ${Bold}${full}@${branch}${NC}"
   # Change the number of required approvals on unlock
   local org repo
   org=${full%%/*}
@@ -181,41 +212,49 @@ unprotect() {
 }
 JSON
 )
+  local t0=$SECONDS
   if gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - <<< "$payload" >/dev/null 2>&1; then
-    printf "${Green}🔓 UNPROTECTED${NC}\n"
+    local dt=$((SECONDS - t0))
+    log_ok "Set reviewers to ${Bold}${unlock_approvals}${NC} ${Dim}(${dt}s)${NC}"
     return 0
   else
-    printf "${Red}✘ FAILED applying unlock approvals${NC}\n"
-    gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - <<< "$payload" 2>&1 | sed 's/^/  /'
+    log_err "Failed to update reviewers on unlock"
+    gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - <<< "$payload" 2>&1 | sed 's/^/  /' | sed $'s/^/\e[2m/' | sed $'s/$/\e[0m/'
     return 1
   fi
 }
 
 # Main
 main() {
-  printf "${Cyan}🔐 branch-lock v1.0 — Multi-Repo Branch Protection Manager${NC}\n"
-  printf "\n"
+  # Parse flags and action
+  ACTION=""
+  for arg in "$@"; do
+    case "$arg" in
+      --yes|-y) YES=1 ;;
+      --quiet|-q) QUIET=1 ;;
+      lock|unlock) ACTION="$arg" ;;
+    esac
+  done
+  if [[ -z "$ACTION" ]]; then
+    printf "Usage: %s [options] <lock|unlock>\n" "$(basename "$0")"
+    printf "Options:\n"
+    printf "  --yes, -y       Skip confirmation\n"
+    printf "  --quiet, -q     Minimal output (hide header and action/targets)\n"
+    exit 1
+  fi
+
+  [[ $QUIET -ne 1 ]] && printf "%b\n\n" "${Cyan}${IC_STAR} ${Bold}branch-lock v1.0${NC} — Multi-Repo Branch Protection Manager"
 
   check_deps
   check_auth
   load_repos
-
-  case "${1:-}" in
-    lock|unlock)
-      ACTION="$1"
-      ;;
-    *)
-      printf "Usage: %s [lock|unlock]\n" "$(basename "$0")"
-      printf "  lock   %s\n" "Require N PR approvals (minimal protection)"
-      printf "  unlock %s\n" "Set approvals on unlock (PUT minimal protection)"
-      exit 1
-      ;;
-  esac
-
   confirm "$ACTION"
 
   local success=0 error=0
+  TOTAL_COUNT=${#REPOS[@]}
+  CURRENT_IDX=0
   for entry in "${REPOS[@]}"; do
+    CURRENT_IDX=$((CURRENT_IDX + 1))
     local full_repo=$(awk '{print $1}' <<< "$entry")
     local target_branch=$(awk '{print $2}' <<< "$entry")
 
@@ -226,23 +265,19 @@ main() {
     fi
 
     if [[ "$ACTION" == "lock" ]]; then
-      if protect "$full_repo" "$target_branch"; then
-        ((success++))
-      else
-        ((error++))
-      fi
+      if protect "$full_repo" "$target_branch"; then ((success++)); else ((error++)); fi
     else
-      if unprotect "$full_repo" "$target_branch"; then
-        ((success++))
-      else
-        ((error++))
-      fi
+      if unprotect "$full_repo" "$target_branch"; then ((success++)); else ((error++)); fi
     fi
   done
 
   printf "\n"
-  printf "${Green}[OK] Completed: %d success, %d error(s)${NC}\n" "$success" "$error"
-  [[ $error -gt 0 ]] && printf "${Yellow}[NOTE] Check permissions or repository/branch names${NC}\n"
+  if [[ $error -eq 0 ]]; then
+    log_ok "Completed: ${Bold}${success}${NC} success, ${Bold}0${NC} errors"
+  else
+    log_err "Completed: ${Bold}${success}${NC} success, ${Bold}${error}${NC} error(s)"
+    log_info "Check permissions or repository/branch names"
+  fi
 }
 
 main "$@"
