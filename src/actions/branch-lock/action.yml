@@ -1,0 +1,45 @@
+# src/actions/branch-lock/action.yml
+name: 'branch-lock'
+description: 'Securely lock or unlock branch protection across multiple repositories'
+author: 'Germán Aliprandi'
+branding:
+  icon: 'lock'
+  color: 'blue'
+
+inputs:
+  action:
+    description: 'Action to perform: lock or unlock'
+    required: true
+    default: 'lock'
+  config-file:
+    description: 'Path to the YAML config file (e.g. src/branch-lock.yaml)'
+    required: false
+    default: 'src/branch-lock.yaml'
+  token:
+    description: 'GitHub token with repo scope (required)'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install yq
+      run: |
+        # Descargar yq para procesar YAML
+        wget -O yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        chmod +x yq
+        sudo mv yq /usr/local/bin/
+      shell: bash
+
+    - name: Download branch-lock script
+      run: |
+        # Descargar el script desde tu repo
+        curl -sL https://raw.githubusercontent.com/galiprandi/bash/main/src/branch-lock > branch-lock
+        chmod +x branch-lock
+      shell: bash
+
+    - name: Run branch-lock
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        ./branch-lock --yes ${{ inputs.action }} --config ${{ inputs.config-file }}
+      shell: bash
