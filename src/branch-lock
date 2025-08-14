@@ -1,0 +1,179 @@
+#!/bin/bash
+
+# branch-lock - Securely protect or unprotect branches across multiple GitHub repositories
+# Usage: ./branch-lock [lock|unlock]
+# Dependencies: gh (GitHub CLI), yq
+
+set -euo pipefail
+
+# Colors
+Cyan='\033[0;36m'
+Green='\033[0;32m'
+Yellow='\033[1;33m'
+Red='\033[0;31m'
+NC='\033[0m'
+
+# Config
+CONFIG="branch-lock.yaml"
+
+# Dependencies check
+check_deps() {
+  for cmd in gh yq; do
+    if ! command -v "$cmd" &> /dev/null; then
+      printf "${Red}[ERROR] %s is not installed. Install: https://cli.github.com | https://github.com/mikefarah/yq${NC}\n" "$cmd"
+      exit 1
+    fi
+  done
+}
+
+# GitHub auth check
+check_auth() {
+  if ! gh auth status &> /dev/null; then
+    printf "${Red}[ERROR] Not authenticated with GitHub CLI. Run 'gh auth login'${NC}\n"
+    exit 1
+  fi
+}
+
+# Config check
+check_config() {
+  [[ -f "$CONFIG" ]] || {
+    printf "${Red}[ERROR] Configuration file '$CONFIG' not found${NC}\n"
+    
+    # Create default config
+    cat <<EOF > "$CONFIG"
+# repositories:
+#   - org: galiprandi
+#     repo: bash
+#     branch: main
+EOF
+    exit 1
+  }
+}
+
+# Load repos from config
+load_repos() {
+  check_config
+
+  if ! yq eval '.repositories' "$CONFIG" &> /dev/null; then
+    printf "${Red}[ERROR] Invalid YAML format or missing 'repositories' in '$CONFIG'${NC}\n"
+    exit 1
+  fi
+
+  REPOS=()
+  while IFS= read -r line; do
+    REPOS+=("$line")
+  done < <(yq eval '.repositories[] | "\(.org)/\(.repo) \(.branch)"' "$CONFIG" 2>/dev/null)
+  [[ ${#REPOS[@]} -gt 0 ]] || {
+    printf "${Red}[ERROR] No repositories defined in '$CONFIG'${NC}\n"
+    exit 1
+  }
+}
+
+# Confirm action
+confirm() {
+  local action=$1
+  printf "${Cyan}Action:    %s${NC}\n" "$action"
+  printf "${Cyan}Targets:   %d repositories${NC}\n" "${#REPOS[@]}"
+  printf "\n"
+  read -rp "Proceed? (yes/N): " CONFIRM
+  [[ "$CONFIRM" == "yes" ]] || {
+    printf "${Red}[ABORT] Operation cancelled${NC}\n"
+    exit 0
+  }
+}
+
+# Apply protection
+protect() {
+  local full="$1" branch="$2"
+  printf "[LOCK] Protecting %s@%s... " "$full" "$branch"
+  local out
+  local payload
+  payload=$(cat <<JSON
+{
+  "required_pull_request_reviews": null,
+  "required_status_checks": { "strict": true, "contexts": [] },
+  "enforce_admins": true,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+)
+  if out=$(gh api "repos/$full/branches/$branch/protection" \
+    --method PUT \
+    -H "Accept: application/vnd.github+json" \
+    --input - 2>&1 <<< "$payload"); then
+    printf "${Green}✔ PROTECTED${NC}\n"
+    return 0
+  else
+    printf "${Red}✘ FAILED${NC}\n"
+    printf "${Yellow}%s${NC}\n" "$out"
+    return 1
+  fi
+}
+
+# Remove protection
+unprotect() {
+  local full="$1" branch="$2"
+  printf "[UNLOCK] Unprotecting %s@%s... " "$full" "$branch"
+  if gh api "repos/$full/branches/$branch/protection" --method DELETE --silent 2>/dev/null; then
+    printf "${Green}🔓 UNPROTECTED${NC}\n"
+    return 0
+  elif ! gh api "repos/$full/branches/$branch/protection" --silent &> /dev/null; then
+    printf "${Green}⏩ Already unprotected${NC}\n"
+    return 0
+  else
+    printf "${Red}✘ FAILED${NC}\n"
+    # show error on failure
+    gh api "repos/$full/branches/$branch/protection" --method DELETE 2>&1 | sed 's/^/  /'
+    return 1
+  fi
+}
+
+# Main
+main() {
+  printf "${Cyan}🔐 branch-lock v1.0 — Multi-Repo Branch Protection Manager${NC}\n"
+  printf "\n"
+
+  check_deps
+  check_auth
+  load_repos
+
+  case "${1:-}" in
+    lock|unlock)
+      ACTION="$1"
+      ;;
+    *)
+      printf "Usage: %s [lock|unlock]\n" "$(basename "$0")"
+      printf "  lock   %s\n" "Enable branch protection (prevent direct pushes)"
+      printf "  unlock %s\n" "Disable branch protection"
+      exit 1
+      ;;
+  esac
+
+  confirm "$ACTION"
+
+  local success=0 error=0
+  for entry in "${REPOS[@]}"; do
+    local full_repo=$(awk '{print $1}' <<< "$entry")
+    local target_branch=$(awk '{print $2}' <<< "$entry")
+
+    if [[ -z "$full_repo" || -z "$target_branch" ]]; then
+      printf "${Red}[SKIP] Invalid entry: %s${NC}\n" "$entry"
+      ((error++))
+      continue
+    fi
+
+    if [[ "$ACTION" == "lock" ]]; then
+      protect "$full_repo" "$target_branch" && ((success++)) || ((error++))
+    else
+      unprotect "$full_repo" "$target_branch" && ((success++)) || ((error++))
+    fi
+  done
+
+  printf "\n"
+  printf "${Green}[OK] Completed: %d success, %d error(s)${NC}\n" "$success" "$error"
+  [[ $error -gt 0 ]] && printf "${Yellow}[NOTE] Check permissions or repository/branch names${NC}\n"
+}
+
+main "$@"
