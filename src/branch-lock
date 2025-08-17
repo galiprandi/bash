@@ -37,9 +37,8 @@ log_err()  { printf "%b %b\n" "${Red}${IC_ERR}${NC}" "$1"; }
 log_info() { printf "%b %b\n" "${Cyan}${IC_INFO}${NC}" "$1"; }
 log_dim()  { printf "%b\n"   "${Dim}$1${NC}"; }
 
-# Config
+# Config defaults and flags
 CONFIG="branch-lock.yaml"
-
 ACTION=""
 YES=0
 QUIET=0
@@ -49,8 +48,7 @@ LOCK_BRANCH_FLAG=0
 check_config() {
   [[ -f "$CONFIG" ]] || {
     printf "${Red}[ERROR] Configuration file '$CONFIG' not found${NC}\n"
-    
-    # Create default config
+    # Create default config (guidance)
     cat <<EOF > "$CONFIG"
 # lock:
 #   required_approvals: 6
@@ -89,23 +87,82 @@ check_auth() {
   fi
 }
 
+# YAML helper (thin wrapper)
+yq_get() { yq eval "$1" "$CONFIG" 2>/dev/null; }
+
 # Load repos from config
 load_repos() {
   check_config
 
-  if ! yq eval '.repositories' "$CONFIG" &> /dev/null; then
+  if ! yq_get '.repositories' >/dev/null; then
     printf "${Red}[ERROR] Invalid YAML format or missing 'repositories' in '$CONFIG'${NC}\n"
     exit 1
   fi
 
   REPOS=()
-  while IFS= read -r line; do
-    REPOS+=("$line")
-  done < <(yq eval '.repositories[] | "\(.org)/\(.repo) \(.branch)"' "$CONFIG" 2>/dev/null)
+  while IFS= read -r line; do REPOS+=("$line"); done \
+    < <(yq_get '.repositories[] | "\(.org)/\(.repo) \(.branch)"')
+
   [[ ${#REPOS[@]} -gt 0 ]] || {
     printf "${Red}[ERROR] No repositories defined in '$CONFIG'${NC}\n"
     exit 1
   }
+}
+
+# Resolve approvals with precedence: per-repo > global(default)
+resolve_approvals() {
+  local action="$1" qrepo="$2" val
+  if [[ "$action" == "lock" ]]; then
+    val=$(yq_get "$qrepo.lock.required_approvals")
+    [[ "$val" == "null" ]] && val=$(yq_get '.lock.required_approvals // 6')
+  else
+    val=$(yq_get "$qrepo.unlock.required_approvals")
+    [[ "$val" == "null" ]] && val=$(yq_get '.unlock.required_approvals // 0')
+  fi
+  echo "$val"
+}
+
+# Cap approvals to GitHub limits
+cap_approvals() {
+  local a="$1"
+  (( a>6 )) && a=6
+  (( a<0 )) && a=0
+  echo "$a"
+}
+
+# Resolve lock_branch with precedence: CLI > per-repo > global > unset
+resolve_lock_branch() {
+  local action="$1" qrepo="$2" lb="__unset__" tmp
+  if [[ "$LOCK_BRANCH_FLAG" -eq 1 ]]; then
+    if [[ "$action" == "lock" ]]; then lb=true; else lb=false; fi
+    echo "$lb"; return
+  fi
+  if [[ "$action" == "lock" ]]; then tmp=$(yq_get "$qrepo.lock.lock_branch"); else tmp=$(yq_get "$qrepo.unlock.lock_branch"); fi
+  if [[ "$tmp" != "null" ]]; then echo "$tmp"; return; fi
+  if [[ "$action" == "lock" ]]; then tmp=$(yq_get '.lock.lock_branch'); else tmp=$(yq_get '.unlock.lock_branch'); fi
+  if [[ "$tmp" != "null" ]]; then echo "$tmp"; else echo "__unset__"; fi
+}
+
+# Build JSON payload string. Emits to stdout.
+build_payload() {
+  local approvals="$1" lbval="$2" extra=""
+  if [[ "$lbval" != "__unset__" ]]; then
+    if [[ "$lbval" == "true" ]]; then
+      extra=$',\n  "lock_branch": true'
+    else
+      extra=$',\n  "lock_branch": false'
+    fi
+  fi
+  cat <<JSON
+{
+  "required_pull_request_reviews": {
+    "required_approving_review_count": $approvals
+  },
+  "required_status_checks": null,
+  "enforce_admins": false,
+  "restrictions": null$extra
+}
+JSON
 }
 
 # Confirm action
@@ -136,65 +193,20 @@ apply_protection() {
   org=${full%%/*}
   repo=${full##*/}
 
-  # Resolve approvals based on action
+  # Resolve approvals and lock_branch
   local approvals qrepo payload out t0 dt
   qrepo=".repositories[] | select(.org==\"$org\" and .repo==\"$repo\" and .branch==\"$branch\")"
   if [[ "$action" == "lock" ]]; then
     log_step "${_pfx}${IC_LOCK} Protecting ${Bold}${full}@${branch}${NC}"
-    local v=$(yq eval "$qrepo.lock.required_approvals" "$CONFIG")
-    if [[ "$v" != "null" ]]; then approvals="$v"; else approvals=$(yq eval ".lock.required_approvals // 6" "$CONFIG"); fi
   else
     log_step "${_pfx}${IC_UNLOCK} Updating protection for ${Bold}${full}@${branch}${NC}"
-    local v=$(yq eval "$qrepo.unlock.required_approvals" "$CONFIG")
-    if [[ "$v" != "null" ]]; then approvals="$v"; else approvals=$(yq eval ".unlock.required_approvals // 0" "$CONFIG"); fi
   fi
-  # Cap approvals to GitHub limit 0..6
-  if [[ "$approvals" -gt 6 ]]; then approvals=6; fi
-  if [[ "$approvals" -lt 0 ]]; then approvals=0; fi
+  approvals=$(resolve_approvals "$action" "$qrepo")
+  approvals=$(cap_approvals "$approvals")
+  local lbval
+  lbval=$(resolve_lock_branch "$action" "$qrepo")
 
-  # Determine lock_branch from CLI flag (override) or YAML (per-repo > global). If unspecified, omit field.
-  local _extra_fields=""
-  local _lock_branch_val="__unset__"
-  if [[ "$LOCK_BRANCH_FLAG" -eq 1 ]]; then
-    if [[ "$action" == "lock" ]]; then _lock_branch_val=true; else _lock_branch_val=false; fi
-  else
-    # Try per-repo override first
-    if [[ "$action" == "lock" ]]; then
-      local lbv=$(yq eval "$qrepo.lock.lock_branch" "$CONFIG")
-    else
-      local lbv=$(yq eval "$qrepo.unlock.lock_branch" "$CONFIG")
-    fi
-    if [[ "$lbv" != "null" ]]; then
-      _lock_branch_val=$lbv
-    else
-      # Fallback to global
-      if [[ "$action" == "lock" ]]; then
-        local lbv2=$(yq eval ".lock.lock_branch" "$CONFIG")
-      else
-        local lbv2=$(yq eval ".unlock.lock_branch" "$CONFIG")
-      fi
-      if [[ "$lbv2" != "null" ]]; then _lock_branch_val=$lbv2; fi
-    fi
-  fi
-  if [[ "$_lock_branch_val" != "__unset__" ]]; then
-    if [[ "$_lock_branch_val" == "true" ]]; then
-      _extra_fields=$',\n  "lock_branch": true'
-    else
-      _extra_fields=$',\n  "lock_branch": false'
-    fi
-  fi
-
-  payload=$(cat <<JSON
-{
-  "required_pull_request_reviews": {
-    "required_approving_review_count": $approvals
-  },
-  "required_status_checks": null,
-  "enforce_admins": false,
-  "restrictions": null$_extra_fields
-}
-JSON
-)
+  payload=$(build_payload "$approvals" "$lbval")
   t0=$SECONDS
   if out=$("$GH_CMD" api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - 2>&1 <<< "$payload"); then
     dt=$((SECONDS - t0))

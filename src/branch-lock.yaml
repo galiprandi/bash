@@ -1,8 +1,8 @@
 lock:
-  # required_approvals: 6
+  required_approvals: 6
   lock_branch: true
 unlock:
-  # required_approvals: 0
+  required_approvals: 0
   lock_branch: false
 repositories:
   - org: galiprandi
