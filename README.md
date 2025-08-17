@@ -16,13 +16,13 @@ This repository is a collection of various bash scripts that I have created for 
 ## Scripts
 
 ### egg
-A Egg Live app launcher and port forwarding tool. See `docs/egg.md`.
+A Egg Live app launcher and port forwarding tool. See [docs/egg.md](docs/egg.md).
 
 ### awt
-A Egg Live script that simplifies starting a development task and links GitHub with Jira. See `docs/awt.md`.
+A Egg Live script that simplifies starting a development task and links GitHub with Jira. See [docs/awt.md](docs/awt.md).
 
 ### branch-lock
-Multi-repo GitHub branch protection manager focused on required PR approvals. See `docs/branch-lock.md` for full configuration, usage, flags, and testing.
+Multi-repo GitHub branch protection manager focused on required PR approvals. See [docs/branch-lock.md](docs/branch-lock.md) for full configuration, usage, flags, and testing.
 
 ## Usage
 
@@ -55,6 +55,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 Detailed docs for each script live in `docs/`:
 
-- `docs/egg.md`
-- `docs/awt.md`
-- `docs/branch-lock.md`
+- [docs/egg.md](docs/egg.md)
+- [docs/awt.md](docs/awt.md)
+- [docs/branch-lock.md](docs/branch-lock.md)
