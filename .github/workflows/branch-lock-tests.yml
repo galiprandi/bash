@@ -1,0 +1,55 @@
+name: branch-lock tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Run tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup dependencies (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bats jq curl
+          # Install yq (mikefarah) as static binary
+          sudo curl -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+          jq --version
+          bats --version
+
+      - name: Setup dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          set -euxo pipefail
+          brew update
+          brew install bats-core jq yq
+          yq --version
+          jq --version
+          bats --version
+
+      - name: Run bats tests
+        env:
+          # Ensure our mock gh is picked up and used by the script
+          GH_CMD: "${{ github.workspace }}/tests/bin/gh"
+          GH_API_LOG: "${{ github.workspace }}/tests/tmp-gh.log"
+          # Homebrew path on macOS runners
+          PATH: "/opt/homebrew/bin:${{ env.PATH }}"
+        run: |
+          set -euxo pipefail
+          chmod +x tests/bin/gh
+          bats tests -t

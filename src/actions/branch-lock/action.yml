@@ -18,6 +18,10 @@ inputs:
   token:
     description: 'GitHub token with repo scope (required)'
     required: true
+  lock-branch:
+    description: 'Toggle lock_branch regardless of YAML (true to set on lock / false to clear on unlock). Default: empty (use YAML only)'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -41,5 +45,10 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
       run: |
-        ./branch-lock --yes ${{ inputs.action }} --config ${{ inputs.config-file }}
+        if [ "${{ inputs.lock-branch }}" = "true" ]; then
+          LB_FLAG="--lock-branch"
+        else
+          LB_FLAG=""
+        fi
+        ./branch-lock --yes $LB_FLAG ${{ inputs.action }} --config ${{ inputs.config-file }}
       shell: bash

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Mock for GitHub CLI used in tests.
+# Captures JSON from --input - and validates it with jq.
+# Writes the last payload to $GH_API_LOG (or discards if unset).
+set -euo pipefail
+
+cmd="${1:-}"
+shift || true
+
+if [[ "$cmd" == "auth" ]]; then
+  sub="${1:-}"
+  shift || true
+  if [[ "$sub" == "status" ]]; then
+    # Pretend we're authenticated
+    exit 0
+  fi
+fi
+
+if [[ "$cmd" == "api" ]]; then
+  # Find --input - and read stdin as JSON
+  while [[ $# -gt 0 && "$1" != "--input" ]]; do shift; done
+  if [[ $# -lt 2 ]]; then
+    echo "mock gh: --input - not provided" >&2
+    exit 2
+  fi
+  shift # --input
+  inp="${1:-}"
+  shift || true
+  if [[ "$inp" != "-" ]]; then
+    echo "mock gh: expected --input -" >&2
+    exit 2
+  fi
+  json="$(cat -)"
+  # Validate JSON
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "mock gh: jq not installed for validation" >&2
+    exit 3
+  fi
+  echo "$json" | jq . >/dev/null
+  # Persist last payload for assertions
+  : "${GH_API_LOG:=}"
+  if [[ -n "${GH_API_LOG}" ]]; then
+    printf '%s\n' "$json" >"$GH_API_LOG"
+  fi
+  # Simulate success
+  exit 0
+fi
+
+echo "mock gh: unexpected command" >&2
+exit 1

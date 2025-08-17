@@ -1,0 +1,9 @@
+{
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 6
+  },
+  "required_status_checks": null,
+  "enforce_admins": false,
+  "restrictions": null,
+  "lock_branch": true
+}

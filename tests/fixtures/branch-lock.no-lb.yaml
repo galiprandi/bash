@@ -1,0 +1,10 @@
+lock:
+  required_approvals: 6
+# lock_branch omitted globally
+unlock:
+  required_approvals: 0
+# lock_branch omitted globally
+repositories:
+  - org: galiprandi
+    repo: bash
+    branch: main
