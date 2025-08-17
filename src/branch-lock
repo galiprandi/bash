@@ -40,6 +40,7 @@ CONFIG="branch-lock.yaml"
 ACTION=""
 YES=0
 QUIET=0
+LOCK_BRANCH_FLAG=0
 
 # Config check
 check_config() {
@@ -148,6 +149,38 @@ apply_protection() {
   if [[ "$approvals" -gt 6 ]]; then approvals=6; fi
   if [[ "$approvals" -lt 0 ]]; then approvals=0; fi
 
+  # Determine lock_branch from CLI flag (override) or YAML (per-repo > global). If unspecified, omit field.
+  local _extra_fields=""
+  local _lock_branch_val="__unset__"
+  if [[ "$LOCK_BRANCH_FLAG" -eq 1 ]]; then
+    if [[ "$action" == "lock" ]]; then _lock_branch_val=true; else _lock_branch_val=false; fi
+  else
+    # Try per-repo override first
+    if [[ "$action" == "lock" ]]; then
+      local lbv=$(yq eval "$qrepo.lock.lock_branch" "$CONFIG")
+    else
+      local lbv=$(yq eval "$qrepo.unlock.lock_branch" "$CONFIG")
+    fi
+    if [[ "$lbv" != "null" ]]; then
+      _lock_branch_val=$lbv
+    else
+      # Fallback to global
+      if [[ "$action" == "lock" ]]; then
+        local lbv2=$(yq eval ".lock.lock_branch" "$CONFIG")
+      else
+        local lbv2=$(yq eval ".unlock.lock_branch" "$CONFIG")
+      fi
+      if [[ "$lbv2" != "null" ]]; then _lock_branch_val=$lbv2; fi
+    fi
+  fi
+  if [[ "$_lock_branch_val" != "__unset__" ]]; then
+    if [[ "$_lock_branch_val" == "true" ]]; then
+      _extra_fields=$',\n  "lock_branch": true'
+    else
+      _extra_fields=$',\n  "lock_branch": false'
+    fi
+  fi
+
   payload=$(cat <<JSON
 {
   "required_pull_request_reviews": {
@@ -155,7 +188,7 @@ apply_protection() {
   },
   "required_status_checks": null,
   "enforce_admins": false,
-  "restrictions": null
+  "restrictions": null$_extra_fields
 }
 JSON
 )
@@ -192,6 +225,9 @@ main() {
     case "$arg" in
       --yes|-y) YES=1 ;;
       --quiet|-q) QUIET=1 ;;
+      --lock-branch)
+        LOCK_BRANCH_FLAG=1
+        ;;
       --config)
         i=$((i + 1))
         CONFIG="${!i}"
@@ -214,6 +250,7 @@ main() {
     printf "  --yes, -y       Skip confirmation\n"
     printf "  --quiet, -q     Minimal output (hide header and action/targets)\n"
     printf "  --config <file> Use custom config file\n"
+    printf "  --lock-branch   Also toggle 'lock_branch' protection (true on lock, false on unlock)\n"
     exit 1
   fi
 

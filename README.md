@@ -27,14 +27,17 @@ Multi-repo GitHub branch protection manager focused on required PR approvals.
 - Requires: GitHub CLI (`gh`) authenticated, and `yq` for YAML parsing.
 - Config file: `src/branch-lock.yaml` with global defaults and per-repo overrides.
 - Actions: `lock` (set required approvals) and `unlock` (set different approvals, minimal protection retained).
+- Optional: toggle GitHub's `lock_branch` (read-only branch) from YAML or with a CLI flag.
 
 Example configuration (`src/branch-lock.yaml`):
 
 ```yaml
 lock:
   required_approvals: 6
+  lock_branch: true        # optional, if true sets branch as read-only on lock
 unlock:
   required_approvals: 0
+  lock_branch: false       # optional, if false clears read-only on unlock
 
 repositories:
   - org: galiprandi
@@ -43,8 +46,10 @@ repositories:
     # Optional per-repo overrides
     # lock:
     #   required_approvals: 4
+    #   lock_branch: true
     # unlock:
     #   required_approvals: 1
+    #   lock_branch: false
 ```
 
 Usage:
@@ -60,12 +65,34 @@ Usage:
 ./src/branch-lock -y lock      # skip confirmation
 ./src/branch-lock -q unlock    # quiet header/action lines
 ./src/branch-lock -y -q lock   # combine
+
+# Toggle lock_branch explicitly (overrides YAML):
+./src/branch-lock --lock-branch lock     # sets lock_branch: true
+./src/branch-lock --lock-branch unlock   # sets lock_branch: false
+
+# If your current directory is the repo root and your config is at src/branch-lock.yaml:
+./src/branch-lock --config src/branch-lock.yaml lock
+./src/branch-lock --config src/branch-lock.yaml --lock-branch lock
 ```
+
+Flags:
+
+- `--yes`, `-y`: skip confirmation
+- `--quiet`, `-q`: minimal output
+- `--config <file>`: custom YAML path
+- `--lock-branch`: toggles `lock_branch` (true on lock, false on unlock). If omitted, only YAML controls it.
 
 Notes:
 
 - Approvals are capped 0..6 per GitHub API.
-- The tool only sets the PR approvals rule and sends a minimal protection payload.
+- The tool sets PR approvals and minimal protection fields.
+- `lock_branch` precedence:
+  1) CLI `--lock-branch` (if provided)
+  2) Per-repo YAML override (`repositories[].lock|unlock.lock_branch`)
+  3) Global YAML (`lock.lock_branch` / `unlock.lock_branch`)
+  4) If unspecified, the script does not modify `lock_branch`.
+
+Tip: If you see "Configuration file 'branch-lock.yaml' not found", pass `--config src/branch-lock.yaml` or run the script from the `src/` directory.
 
 ## Usage
 

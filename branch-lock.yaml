@@ -1,0 +1,14 @@
+# lock:
+#   required_approvals: 6
+# unlock:
+#   required_approvals: 1
+#
+# repositories:
+#   - org: galiprandi
+#     repo: bash
+#     branch: main
+#     # Optional per-repository overrides (if omitted, global lock/unlock settings are used)
+#     # lock:
+#     #   required_approvals: 6
+#     # unlock:
+#     #   required_approvals: 1
