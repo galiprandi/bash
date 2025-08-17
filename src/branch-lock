@@ -7,7 +7,10 @@
 # Author: Germán Aliprandi - https://github.com/galiprandi  
 # License: MIT
 
-set -euo pipefail
+set -uo pipefail
+
+# Allow overriding GitHub CLI for testing
+GH_CMD=${GH_CMD:-gh}
 
 # Colors
 Cyan='\033[0;36m'
@@ -70,7 +73,7 @@ EOF
 
 # Dependencies check
 check_deps() {
-  for cmd in gh yq; do
+  for cmd in "$GH_CMD" yq; do
     if ! command -v "$cmd" &> /dev/null; then
       printf "${Red}[ERROR] %s is not installed. Install: https://cli.github.com   | https://github.com/mikefarah/yq  ${NC}\n" "$cmd"
       exit 1
@@ -80,7 +83,7 @@ check_deps() {
 
 # GitHub auth check
 check_auth() {
-  if ! gh auth status &> /dev/null; then
+  if ! "$GH_CMD" auth status &> /dev/null; then
     printf "${Red}[ERROR] Not authenticated with GitHub CLI. Run 'gh auth login'${NC}\n"
     exit 1
   fi
@@ -193,7 +196,7 @@ apply_protection() {
 JSON
 )
   t0=$SECONDS
-  if out=$(gh api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - 2>&1 <<< "$payload"); then
+  if out=$("$GH_CMD" api "repos/$full/branches/$branch/protection" --method PUT -H "Accept: application/vnd.github+json" --input - 2>&1 <<< "$payload"); then
     dt=$((SECONDS - t0))
     if [[ "$action" == "lock" ]]; then
       log_ok "Locked with ${Bold}${approvals}${NC} reviewer(s) ${Dim}(${dt}s)${NC}"

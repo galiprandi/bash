@@ -120,3 +120,29 @@ Contributions are welcome! Please follow these steps to contribute:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Testing (branch-lock)
+
+We use bats-core with a mocked `gh` to test `src/branch-lock` without hitting GitHub.
+
+Requirements:
+
+- macOS: `brew install bats-core jq yq`
+
+Run tests:
+
+```bash
+# Ensure mock is executable (first time only)
+chmod +x tests/bin/gh
+
+# Run all tests
+bats tests
+
+# If bats is not on PATH (Homebrew installs as bats):
+/opt/homebrew/bin/bats tests
+```
+
+Notes:
+
+- The test suite prepends `tests/bin` to `PATH` so the mock `gh` is used.
+- JSON payloads sent to the mock are validated with `jq` and saved to `$GH_API_LOG` for assertions.

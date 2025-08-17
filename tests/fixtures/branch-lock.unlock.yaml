@@ -1,0 +1,9 @@
+unlock:
+  required_approvals: 0
+  lock_branch: false
+lock:
+  required_approvals: 6
+repositories:
+  - org: galiprandi
+    repo: bash
+    branch: main
