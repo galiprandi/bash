@@ -47,9 +47,9 @@ jobs:
           # Ensure our mock gh is picked up and used by the script
           GH_CMD: "${{ github.workspace }}/tests/bin/gh"
           GH_API_LOG: "${{ github.workspace }}/tests/tmp-gh.log"
-          # Homebrew path on macOS runners
-          PATH: "/opt/homebrew/bin:${{ env.PATH }}"
         run: |
           set -euxo pipefail
-          chmod +x tests/bin/gh
+          # Make sure Homebrew tools are ahead on macOS, but keep system PATH
+          export PATH="/opt/homebrew/bin:$PATH"
+          /bin/chmod +x tests/bin/gh
           bats tests -t
