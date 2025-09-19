@@ -7,19 +7,19 @@ mkdir -p "$PORT_FORWARD_PID_DIR"
 
 # Servicios en formato: name|remote_port|k8s_service
 readonly SERVICES=(
-    "mongo|27017|mongo"
-    "mysql|3306|mysql"
-    "mysql-egg|3306|mysql-egg"
-    "api-hca|5000|api-hca"
-    "api-websocket|6060|api-websocket"
-    "redis|6379|redis-master"
+    "EGG|27017|mongo"
+    "ACT|3306|mysql"
+    "STA|3306|mysql-egg"
+    "HCA|5000|api-hca"
+    "WS|6060|api-websocket"
+    "REDIS|6379|redis-master"
 )
 
 # Namespaces y offsets
 readonly NAMESPACE_PORT_OFFSETS=(
-    "development:0"
+    "development:10"
     "demo:20"
-    "production:30"
+    # "production:30"
 )
 
 # Guardar PID
@@ -54,7 +54,7 @@ open_port_forward() {
     fi
 
     if is_port_in_use "$local_port"; then
-        echo "🔌 $name: http://localhost:$local_port (Already running)"
+        echo "✅ $name: http://localhost:$local_port (Already running)"
         return
     fi
 
@@ -84,18 +84,19 @@ open_all_namespaces() {
     for ns_offset in "${NAMESPACE_PORT_OFFSETS[@]}"; do
         IFS=':' read -r namespace offset <<< "$ns_offset"
 
+    echo ""
         case "$namespace" in
             development)
-                echo "🔑 Getting credentials for development..."
+                echo "🔑 [$namespace] Getting credentials..."
                 gcloud container clusters get-credentials egg-gke-develop --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
                 ;;
             demo)
-                echo "🔑 Getting credentials for demo..."
+                echo "🔑 [$namespace] Getting credentials..."
                 gcloud container clusters get-credentials egg-gke-demo --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
                 ;;
             production)
-                echo "🔑 Getting credentials for production..."
-                aws eks update-kubeconfig --name egg-eks-pro --region us-east-1 >/dev/null 2>&1
+                echo "🔑 [$namespace] Getting credentials..."
+                gcloud container clusters get-credentials egg-gke-prod --zone us-central1-a --project egg-prod-api >/dev/null 2>&1
                 ;;
             *)
                 echo "❌ Unknown namespace: $namespace"
@@ -106,7 +107,7 @@ open_all_namespaces() {
         for entry in "${SERVICES[@]}"; do
             IFS='|' read -r name remote_port k8s_service <<< "$entry"
             local_port=$((remote_port + offset))
-            open_port_forward "${name}-${namespace}" "$local_port" "$remote_port" "$k8s_service" "$namespace"
+            open_port_forward "[${namespace}] ${name}" "$local_port" "$remote_port" "$k8s_service" "$namespace"
         done
     done
 }
